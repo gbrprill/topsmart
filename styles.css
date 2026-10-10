@@ -708,7 +708,9 @@ td { padding: 12px; border-bottom: 1px solid var(--border); white-space: nowrap;
 .modal--wide { width: min(620px, calc(100% - 24px)); max-height: calc(100dvh - 24px); overflow-y: auto; }
 .modal__icon { width: 52px; height: 52px; border-radius: 16px; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; margin-bottom: 14px; }
 .confirm-list { display: grid; gap: 8px; background: var(--surface); border-radius: 14px; padding: 14px 16px; margin-bottom: 18px; max-height: 260px; overflow-y: auto; }
-.confirm-list .total-line { font-size: 14px; gap: 12px; }
+.modal--md { width: min(560px, calc(100% - 24px)); }
+.confirm-list .total-line { font-size: 14px; gap: 16px; align-items: baseline; }
+.confirm-list .total-line > :last-child { white-space: nowrap; flex: none; }
 .confirm-total { border-top: 1px dashed #c9d1db; padding-top: 10px; margin-top: 4px; }
 .confirm-total strong { font-size: 18px; }
 .order-badge { display: inline-flex; align-items: center; gap: 8px; background: #e3f5e9; color: #0e6b37; font-size: 14px; padding: 6px 12px; border-radius: 999px; margin-bottom: 12px; }
