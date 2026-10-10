@@ -1272,6 +1272,7 @@
     const [path] = location.hash.replace(/^#/, "").split("?");
     const parts = path.split("/").filter(Boolean);
     closeDrawer();
+    document.querySelectorAll("dialog[open]").forEach((dlg) => dlg.close());
     clearInterval(sliderTimer);
     let html;
     switch (parts[0]) {
