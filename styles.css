@@ -922,7 +922,11 @@ kbd { font: 600 11px/1 ui-monospace, "Cascadia Mono", monospace; padding: 3px 5p
 .side__link.is-active .i { color: var(--primary); }
 .side__n { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 99px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
 .side__n:empty { display: none; }
-.admin__main { padding: 26px 32px 80px; min-width: 0; display: grid; gap: 20px; align-content: start; max-width: 1240px; }
+.admin__main { padding: 26px 32px 80px; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-content: start; max-width: 1240px; }
+/* nenhum bloco do painel pode alargar a página (no celular com zoom o topo ficava cortado) */
+.admin__main > *, .box__head, .notice > span { min-width: 0; }
+.admin { overflow-x: clip; }
+@media (max-width: 520px) { .notice--cta span { min-width: 0; flex-basis: 100%; } .box__tools { width: 100%; justify-content: space-between; } }
 .admin__main > .box, .admin__main > form.box { margin: 0; }
 .admin-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .admin-head h1 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
@@ -1052,7 +1056,7 @@ kbd { font: 600 11px/1 ui-monospace, "Cascadia Mono", monospace; padding: 3px 5p
 .pdv__side-actions { display: flex; justify-content: space-between; }
 .pdv__side-actions .text-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
 .pdv__side-actions .i { width: 14px; height: 14px; }
-.pdv--devol .pdv__side { box-shadow: 0 0 0 2px #1d1d1d inset, 0 12px 30px rgba(15, 30, 50, .06); }
+.pdv--devolucao .pdv__side { box-shadow: 0 0 0 2px #1d1d1d inset, 0 12px 30px rgba(15, 30, 50, .06); }
 .pay__head { display: flex; align-items: center; justify-content: space-between; }
 .pay__head .text-btn { display: inline-flex; align-items: center; gap: 2px; padding: 0; text-decoration: none; font-weight: 600; }
 .pay__total { font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
@@ -1195,3 +1199,31 @@ body.is-admin { --header-h: 124px; }
 /* painel de operação: troca de tela instantânea, sem animação de entrada */
 .view.admin { animation: none; }
 @media (max-width: 520px) { .abrir { grid-template-columns: 1fr; } .abrir__ic { width: 48px; height: 48px; border-radius: 14px; } }
+
+/* ---------- troca, estado do produto e cliente novo ---------- */
+.troca { display: grid; gap: 18px; }
+.troca__lado { display: grid; gap: 10px; min-width: 0; }
+.troca__lado h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
+.troca__lado h2 .i { width: 18px; height: 18px; color: var(--primary); }
+.troca__lado--volta { padding-bottom: 18px; border-bottom: 1px dashed #cfd5dd; }
+.cell-sel { height: 38px; border-radius: 9px; border: 1px solid var(--line); padding: 0 8px; font-size: 14px; background: #fff; max-width: 200px; }
+.cell-sel.is-bad { border-color: #e7a99c; background: #fdf1ee; color: #9b2a16; }
+.cell-sel:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.field__label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; }
+.cli-new { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; padding: 0; font-size: 13px; font-weight: 600; color: var(--primary); text-decoration: none; }
+.cli-new .i { width: 14px; height: 14px; }
+.cli-form { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.cli-form__head { display: flex; justify-content: space-between; align-items: center; }
+.cli-form__head .text-btn { padding: 0; font-size: 13px; }
+.cli-form .field { margin: 0; }
+.cli-form .field input { height: 42px; font-size: 15px; }
+.cli-form .seg { justify-self: start; }
+.pdv__results li .i { width: 14px; height: 14px; vertical-align: -2px; }
+.pay__total { display: grid; justify-items: end; line-height: 1.05; }
+.pay__total small { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+.vlist__val small { display: block; font-size: 11px; font-weight: 600; color: var(--muted); text-align: right; }
+.rep__note--perda { font-size: 13px; color: #9b2a16; background: #fdf1ee; border-radius: 10px; padding: 10px 12px; }
+.pdv--troca .pdv__side { box-shadow: 0 0 0 2px var(--primary) inset, 0 12px 30px rgba(15, 30, 50, .06); }
+@media (max-width: 520px) { .pdv__bar .seg { width: 100%; } .pdv__bar .seg button { flex: 1; justify-content: center; padding: 0 8px; } }.cell-sel { max-width: 140px; }
+.estado-hint { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.pdv__table td:first-child { min-width: 160px; }

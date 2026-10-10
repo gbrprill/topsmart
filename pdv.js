@@ -157,15 +157,24 @@
   // ======================================================================
   // VENDA BALCÃO
   // ======================================================================
-  const novaVenda = () => ({ tipo: "venda", itens: [], cliente: null, vendedorId: store.get("ts_pdv_vendedor", ""), obs: "", pagamentos: [], etapa: "itens" });
-  let sale = store.get("ts_pdv_sale", null) || novaVenda();
+  const novaVenda = () => ({ tipo: "venda", itens: [], devolvidos: [], cliente: null, vendedorId: store.get("ts_pdv_vendedor", ""), obs: "", pagamentos: [], etapa: "itens" });
+  let sale = { ...novaVenda(), ...(store.get("ts_pdv_sale", null) || {}) };
+  sale.devolvidos ||= [];
   const saveSale = () => store.set("ts_pdv_sale", sale);
   const espera = () => store.get("ts_pdv_espera", []);
+  let cliForm = null; // formulário de cliente novo aberto (com o nome já digitado)
 
+  const r2 = (v) => Math.round(v * 100) / 100;
   const precoPara = (p) => sale.cliente?.tipo === "lojista" ? (p.priceLoj ?? p.price) : (p.promo ?? p.price);
-  const totalItens = () => sale.itens.reduce((s, it) => s + Math.max(0, it.unit * it.qty - (it.desconto || 0)), 0);
+  const subItem = (it) => Math.max(0, it.unit * it.qty - (it.desconto || 0));
+  const soma = (lista) => r2(lista.reduce((s, it) => s + subItem(it), 0));
   const totalDescontos = () => sale.itens.reduce((s, it) => s + (it.desconto || 0), 0);
+  // positivo: o cliente paga; negativo: a loja devolve dinheiro ao cliente
+  const saldo = () => sale.tipo === "troca" ? r2(soma(sale.itens) - soma(sale.devolvidos)) : sale.tipo === "devolucao" ? -soma(sale.itens) : soma(sale.itens);
+  const aPagar = () => Math.abs(saldo());
+  const devolvendo = () => saldo() < 0;
   const totalPago = () => sale.pagamentos.reduce((s, p) => s + (p.valor || 0), 0);
+  const prontoParaPagar = () => sale.itens.length > 0 && (sale.tipo !== "troca" || sale.devolvidos.length > 0);
 
   function viewBalcao() {
     return `<div class="admin-head"><div><h1>Venda balcão</h1></div><div id="pdv-loja"></div></div>
@@ -176,6 +185,39 @@
       })}`;
   }
 
+  const searchBox = (alvo, placeholder, atalho) => `
+    <div class="pdv__search">
+      ${icon("i-search")}
+      <input id="pdv-q-${alvo}" class="pdv-q" data-alvo="${alvo}" type="search" autocomplete="off" placeholder="${placeholder}" aria-label="${placeholder}" aria-controls="pdv-res-${alvo}" aria-expanded="false" ${sale.etapa === "pagamento" ? "disabled" : ""}>
+      ${atalho ? "<kbd>F2</kbd>" : ""}
+      <ul class="pdv__results" id="pdv-res-${alvo}" role="listbox" hidden></ul>
+    </div>`;
+
+  function tabelaItens(lista, alvo, { estado = false } = {}) {
+    const travado = sale.etapa === "pagamento";
+    return `<div class="table-wrap"><table class="pdv__table">
+      <thead><tr><th>Produto</th><th class="r">Qtd</th><th class="r">Preço un.</th>${estado ? "<th>Estado</th>" : '<th class="r">Desconto</th>'}<th class="r">Subtotal</th><th></th></tr></thead>
+      <tbody>${lista.map((it, i) => {
+        const p = T().prodBy(it.productId);
+        const pouco = alvo === "itens" && sale.tipo !== "devolucao" && p && it.qty > p.stock;
+        const ref = `${alvo}:${i}`;
+        return `<tr>
+          <td><b>${esc(it.name)}${it.code ? ` - ${esc(it.code)}` : ""}</b>${it.variant ? `<small class="muted"> (${esc(it.variant)})</small>` : ""}${pouco ? `<small class="warn-text">Só ${p.stock} em estoque</small>` : ""}</td>
+          <td class="r"><input class="cell-in cell-in--qty num" type="number" min="1" step="1" value="${it.qty}" data-pdv-item="${ref}" data-field="qty" aria-label="Quantidade" ${travado ? "disabled" : ""}></td>
+          <td class="r"><input class="cell-in num" inputmode="decimal" value="${fmtMoneyInput(it.unit)}" data-pdv-item="${ref}" data-field="unit" aria-label="Preço unitário" ${travado ? "disabled" : ""}></td>
+          ${estado
+            ? `<td><select class="cell-sel ${it.estado === "defeito" ? "is-bad" : ""}" data-pdv-item="${ref}" data-field="estado" aria-label="Estado do produto devolvido" ${travado ? "disabled" : ""}>
+                <option value="bom" ${it.estado !== "defeito" ? "selected" : ""}>Bom</option>
+                <option value="defeito" ${it.estado === "defeito" ? "selected" : ""}>Com defeito</option></select><small class="estado-hint">${it.estado === "defeito" ? "não volta ao estoque" : "volta ao estoque"}</small></td>`
+            : `<td class="r"><input class="cell-in num" inputmode="decimal" value="${it.desconto ? fmtMoneyInput(it.desconto) : ""}" placeholder="0,00" data-pdv-item="${ref}" data-field="desconto" aria-label="Desconto" ${travado ? "disabled" : ""}></td>`}
+          <td class="r num"><b>${money(subItem(it))}</b></td>
+          <td class="r">${travado ? "" : `<button class="icon-btn icon-btn--sm" data-pdv-del="${ref}" aria-label="Remover ${esc(it.name)}">${icon("i-trash")}</button>`}</td>
+        </tr>`;
+      }).join("")}</tbody></table></div>`;
+  }
+
+  const vazio = (ic, txt) => `<div class="pdv__empty">${icon(ic)}<p>${txt}</p></div>`;
+
   function renderPdv() {
     const root = $("#pdv-root");
     if (!root) return;
@@ -185,79 +227,107 @@
       return;
     }
     if (sale.vendedorId && !vendedoresDaLoja().some((v) => v.id === sale.vendedorId)) sale.vendedorId = "";
-    const devol = sale.tipo === "devolucao";
+    const tipo = sale.tipo;
+    const modos = [["venda", "Venda", ""], ["troca", "Troca", "i-swap"], ["devolucao", "Devolução", "i-undo"]];
+    let corpo;
+    if (tipo === "troca") {
+      corpo = `
+        <div class="troca">
+          <section class="troca__lado troca__lado--volta">
+            <h2>${icon("i-undo")}Cliente devolveu</h2>
+            ${searchBox("devolvidos", "Produto que voltou: nome ou código", true)}
+            ${sale.devolvidos.length ? tabelaItens(sale.devolvidos, "devolvidos", { estado: true }) : vazio("i-undo", "Busque o produto que o cliente trouxe de volta e diga se ele voltou bom ou com defeito.")}
+          </section>
+          <section class="troca__lado">
+            <h2>${icon("i-bag")}Cliente vai levar</h2>
+            ${searchBox("itens", "Produto novo: nome ou código")}
+            ${sale.itens.length ? tabelaItens(sale.itens, "itens") : vazio("i-bag", "Busque o produto que o cliente vai levar no lugar.")}
+          </section>
+        </div>`;
+    } else {
+      const devol = tipo === "devolucao";
+      corpo = `${searchBox("itens", devol ? "Produto devolvido: nome ou código" : "Buscar produto por nome ou código", true)}
+        ${sale.itens.length ? tabelaItens(sale.itens, "itens", { estado: devol })
+          : vazio(devol ? "i-undo" : "i-search", devol ? "Busque o produto que o cliente está devolvendo. Se voltar bom, entra de novo no estoque." : "Busque o produto pelo nome ou código e aperte Enter para adicionar.")}`;
+    }
     root.innerHTML = `
       ${abertoOutroDia(c) ? `<div class="alert alert--warn">${icon("i-clock")}<div>Caixa aberto desde <strong>${dia(c.abertoEm)}</strong>. As vendas de hoje vão entrar nele.</div><a class="btn btn--ghost btn--sm" href="#/admin?aba=caixa">Fechar caixa</a></div>` : ""}
-      <div class="pdv ${devol ? "pdv--devol" : ""}">
+      <div class="pdv pdv--${tipo}">
         <section class="pdv__items" aria-label="Itens">
           <div class="pdv__bar">
             <div class="seg" role="radiogroup" aria-label="Tipo de operação">
-              <button role="radio" aria-checked="${!devol}" class="${!devol ? "is-on" : ""}" data-pdv-tipo="venda">Venda</button>
-              <button role="radio" aria-checked="${devol}" class="${devol ? "is-on" : ""}" data-pdv-tipo="devolucao">${icon("i-undo")}Devolução</button>
+              ${modos.map(([k, n, ic]) => `<button role="radio" aria-checked="${tipo === k}" class="${tipo === k ? "is-on" : ""}" data-pdv-tipo="${k}">${ic ? icon(ic) : ""}${n}</button>`).join("")}
             </div>
-            ${espera().length ? `<div class="espera">${icon("i-pause")}<span>Em espera:</span>${espera().map((e, i) => `<button class="chip" data-pdv-resume="${i}" title="Retomar">${esc(e.cliente?.nome || "Ao consumidor")} · ${e.itens.length} ${e.itens.length === 1 ? "item" : "itens"}</button>`).join("")}</div>` : ""}
+            ${tipo === "venda" && espera().length ? `<div class="espera">${icon("i-pause")}<span>Em espera:</span>${espera().map((e, i) => `<button class="chip" data-pdv-resume="${i}" title="Retomar">${esc(e.cliente?.nome || "Ao consumidor")} · ${e.itens.length} ${e.itens.length === 1 ? "item" : "itens"}</button>`).join("")}</div>` : ""}
           </div>
-          <div class="pdv__search">
-            ${icon("i-search")}
-            <input id="pdv-q" type="search" autocomplete="off" placeholder="${devol ? "Produto devolvido: nome ou código" : "Buscar produto por nome ou código"}" aria-label="Buscar produto" aria-controls="pdv-results" aria-expanded="false" ${sale.etapa === "pagamento" ? "disabled" : ""}>
-            <kbd>F2</kbd>
-            <ul class="pdv__results" id="pdv-results" role="listbox" hidden></ul>
-          </div>
-          ${sale.itens.length ? `
-          <div class="table-wrap"><table class="pdv__table">
-            <thead><tr><th>Produto</th><th class="r">Qtd</th><th class="r">Preço un.</th><th class="r">Desconto</th><th class="r">Subtotal</th><th></th></tr></thead>
-            <tbody>${sale.itens.map((it, i) => {
-              const p = T().prodBy(it.productId);
-              const pouco = !devol && p && it.qty > p.stock;
-              return `<tr>
-                <td><b>${esc(it.name)}${it.code ? ` - ${esc(it.code)}` : ""}</b>${it.variant ? `<small class="muted"> (${esc(it.variant)})</small>` : ""}${pouco ? `<small class="warn-text">Só ${p.stock} em estoque</small>` : ""}</td>
-                <td class="r"><input class="cell-in cell-in--qty num" type="number" min="1" step="1" value="${it.qty}" data-pdv-item="${i}" data-field="qty" aria-label="Quantidade" ${sale.etapa === "pagamento" ? "disabled" : ""}></td>
-                <td class="r"><input class="cell-in num" inputmode="decimal" value="${fmtMoneyInput(it.unit)}" data-pdv-item="${i}" data-field="unit" aria-label="Preço unitário" ${sale.etapa === "pagamento" ? "disabled" : ""}></td>
-                <td class="r"><input class="cell-in num" inputmode="decimal" value="${it.desconto ? fmtMoneyInput(it.desconto) : ""}" placeholder="0,00" data-pdv-item="${i}" data-field="desconto" aria-label="Desconto" ${sale.etapa === "pagamento" ? "disabled" : ""}></td>
-                <td class="r num"><b>${money(Math.max(0, it.unit * it.qty - (it.desconto || 0)))}</b></td>
-                <td class="r">${sale.etapa === "pagamento" ? "" : `<button class="icon-btn icon-btn--sm" data-pdv-del="${i}" aria-label="Remover ${esc(it.name)}">${icon("i-trash")}</button>`}</td>
-              </tr>`;
-            }).join("")}</tbody>
-          </table></div>` : `<div class="pdv__empty">${icon(devol ? "i-undo" : "i-search")}<p>${devol ? "Busque o produto que o cliente está devolvendo. O valor sai do caixa e o item volta para o estoque." : "Busque o produto pelo nome ou código e aperte Enter para adicionar."}</p></div>`}
+          ${corpo}
         </section>
         <aside class="pdv__side" aria-label="Fechamento">${sale.etapa === "pagamento" ? pagamentoHTML() : resumoVendaHTML()}</aside>
       </div>`;
-    if (sale.etapa === "pagamento") $("#pdv-pay-0")?.focus(); else $("#pdv-q")?.focus();
+    if (sale.etapa === "pagamento") $("#pdv-pay-0")?.focus();
+    else if (!cliForm) $(".pdv-q")?.focus();
   }
 
+  const fmtDoc = (v) => (T().digits(v).length > 11 ? T().masks.cnpj(v) : T().masks.cpf(v));
+
   function clienteHTML() {
+    if (cliForm) {
+      return `<form class="cli-form" id="cli-form" novalidate>
+        <div class="cli-form__head"><b>Cliente novo</b><button type="button" class="text-btn" data-cli-cancel>Cancelar</button></div>
+        <div class="seg seg--sm" role="radiogroup" aria-label="Tipo de cliente">
+          <label><input type="radio" name="tipo" value="cliente" ${cliForm.tipo !== "lojista" ? "checked" : ""}><span>Cliente</span></label>
+          <label><input type="radio" name="tipo" value="lojista" ${cliForm.tipo === "lojista" ? "checked" : ""}><span>Lojista</span></label>
+        </div>
+        <label class="field"><span>Nome ou razão social</span><input name="nome" value="${esc(cliForm.nome)}" maxlength="120" required autocomplete="off"><span class="err"></span></label>
+        <label class="field"><span>CPF ou CNPJ <span class="opt">(opcional)</span></span><input name="doc" inputmode="numeric" data-mask-doc maxlength="18" autocomplete="off"><span class="err"></span></label>
+        <label class="field"><span>WhatsApp <span class="opt">(para mandar a notinha)</span></span><input name="phone" inputmode="tel" maxlength="16" placeholder="(33) 99999-9999" autocomplete="off"><span class="err"></span></label>
+        <button class="btn btn--primary btn--block btn--sm">${icon("i-check")}Cadastrar e usar</button>
+      </form>`;
+    }
     if (sale.cliente) {
       return `<div class="cli is-set"><div><b>${esc(sale.cliente.nome)}</b>${sale.cliente.tipo === "lojista" ? ' <span class="tag tag--pro">Lojista</span>' : ""}<small class="muted">${esc([sale.cliente.doc, sale.cliente.telefone].filter(Boolean).join(" · ")) || "sem documento"}</small></div><button class="text-btn" data-pdv-cli-clear>Trocar</button></div>`;
     }
-    return `<div class="cli"><input id="pdv-cli" type="search" autocomplete="off" placeholder="Ao consumidor" aria-label="Cliente"><ul class="pdv__results" id="pdv-cli-results" role="listbox" hidden></ul></div>`;
+    return `<div class="cli"><input id="pdv-cli" type="search" autocomplete="off" placeholder="Ao consumidor" aria-label="Cliente"><ul class="pdv__results" id="pdv-cli-results" role="listbox" hidden></ul></div>
+      <button type="button" class="text-btn cli-new" data-cli-new>${icon("i-plus")}Cadastrar cliente novo</button>`;
   }
 
   function resumoVendaHTML() {
     const vend = vendedoresDaLoja();
-    const devol = sale.tipo === "devolucao";
+    const tipo = sale.tipo, s = saldo();
+    let totais, botao;
+    if (tipo === "troca") {
+      totais = `
+        <div><dt>Devolveu</dt><dd class="num">-${money(soma(sale.devolvidos))}</dd></div>
+        <div><dt>Vai levar</dt><dd class="num">${money(soma(sale.itens))}</dd></div>
+        <div class="totals__main"><dt>${s > 0 ? "Cliente paga" : s < 0 ? "Devolver ao cliente" : "Diferença"}</dt><dd class="num ${s < 0 ? "neg" : ""}">${money(Math.abs(s))}</dd></div>`;
+      botao = s > 0 ? "Cobrar diferença" : s < 0 ? "Devolver diferença" : "Concluir troca";
+    } else {
+      totais = `
+        <div><dt>Itens</dt><dd class="num">${sale.itens.reduce((n, it) => n + it.qty, 0)}</dd></div>
+        ${totalDescontos() && tipo === "venda" ? `<div><dt>Descontos</dt><dd class="num">-${money(totalDescontos())}</dd></div>` : ""}
+        <div class="totals__main"><dt>${tipo === "devolucao" ? "Total a devolver" : "Total"}</dt><dd class="num">${money(aPagar())}</dd></div>`;
+      botao = tipo === "devolucao" ? "Devolver valor" : "Ir para o pagamento";
+    }
     return `
-      <label class="field"><span>Cliente</span>${clienteHTML()}</label>
+      <div class="field"><span class="field__label">Cliente</span>${clienteHTML()}</div>
       <label class="field"><span>Vendedor</span>
-        ${vend.length ? `<select id="pdv-vend" data-pdv-vend><option value="">Escolha quem vendeu</option>${vend.map((v) => `<option value="${esc(v.id)}" ${v.id === sale.vendedorId ? "selected" : ""}>${esc(v.nome)}</option>`).join("")}</select><span class="err" id="pdv-vend-err"></span>`
+        ${vend.length ? `<select id="pdv-vend" data-pdv-vend><option value="">Escolha quem atendeu</option>${vend.map((v) => `<option value="${esc(v.id)}" ${v.id === sale.vendedorId ? "selected" : ""}>${esc(v.nome)}</option>`).join("")}</select><span class="err" id="pdv-vend-err"></span>`
           : `<span class="notice">Nenhum vendedor nesta loja. <a href="#/admin?aba=equipe">Cadastrar vendedores</a></span>`}
       </label>
-      <dl class="totals">
-        <div><dt>Itens</dt><dd class="num">${sale.itens.reduce((s, it) => s + it.qty, 0)}</dd></div>
-        ${totalDescontos() ? `<div><dt>Descontos</dt><dd class="num">-${money(totalDescontos())}</dd></div>` : ""}
-        <div class="totals__main"><dt>${devol ? "Total a devolver" : "Total"}</dt><dd class="num">${money(totalItens())}</dd></div>
-      </dl>
-      <button class="btn ${devol ? "btn--dark" : "btn--primary"} btn--block" data-pdv-pagar ${sale.itens.length ? "" : "disabled"}>${devol ? "Devolver valor" : "Ir para o pagamento"}<kbd>F9</kbd></button>
-      ${sale.itens.length ? `<div class="pdv__side-actions">${devol ? "" : `<button class="text-btn" data-pdv-hold>${icon("i-pause")}Deixar em espera</button>`}<button class="text-btn" data-pdv-clear>Limpar</button></div>` : ""}`;
+      <dl class="totals">${totais}</dl>
+      <button class="btn ${tipo === "venda" ? "btn--primary" : "btn--dark"} btn--block" data-pdv-pagar ${prontoParaPagar() ? "" : "disabled"}>${botao}<kbd>F9</kbd></button>
+      ${sale.itens.length || sale.devolvidos.length ? `<div class="pdv__side-actions">${tipo === "venda" ? `<button class="text-btn" data-pdv-hold>${icon("i-pause")}Deixar em espera</button>` : "<span></span>"}<button class="text-btn" data-pdv-clear>Limpar</button></div>` : ""}`;
   }
 
   function pagamentoHTML() {
-    const total = totalItens(), pago = totalPago();
-    const falta = Math.max(0, Math.round((total - pago) * 100) / 100);
-    const troco = Math.max(0, Math.round((pago - total) * 100) / 100);
-    const devol = sale.tipo === "devolucao";
+    const total = aPagar(), pago = totalPago();
+    const falta = Math.max(0, r2(total - pago));
+    const troco = Math.max(0, r2(pago - total));
+    const devol = devolvendo();
     const formas = Object.entries(FORMAS).filter(([f]) => !(devol && f === "fiado"));
+    const titulo = sale.tipo === "troca" ? (devol ? "Diferença a devolver" : "Diferença a cobrar") : devol ? "Valor a devolver" : "Total";
     return `
-      <div class="pay__head"><button class="text-btn" data-pdv-voltar>${icon("i-left")}Itens</button><span class="pay__total num">${money(total)}</span></div>
+      <div class="pay__head"><button class="text-btn" data-pdv-voltar>${icon("i-left")}Itens</button><span class="pay__total num"><small>${titulo}</small>${money(total)}</span></div>
       <p class="muted pay__hint">${devol ? "Como o valor volta para o cliente?" : "Escolha a forma de pagamento. Para dividir, adicione outra forma."}</p>
       <div class="pay__quick">${formas.map(([f, n]) => `<button class="pay__chip" data-pdv-forma="${f}">${icon(FORMA_IC[f])}${n}</button>`).join("")}</div>
       <div class="pay__rows">${sale.pagamentos.map((p, i) => `
@@ -268,17 +338,17 @@
         </div>`).join("") || `<p class="pay__none">Nenhuma forma escolhida.</p>`}
       </div>
       <dl class="totals">
-        <div><dt>Recebido</dt><dd class="num">${money(pago)}</dd></div>
+        <div><dt>${devol ? "Devolvido" : "Recebido"}</dt><dd class="num">${money(pago)}</dd></div>
         ${falta ? `<div class="totals__falta"><dt>Falta</dt><dd class="num">${money(falta)}</dd></div>` : ""}
         ${troco ? `<div class="totals__troco"><dt>Troco</dt><dd class="num">${money(troco)}</dd></div>` : ""}
       </dl>
       <label class="field"><span>Observação <span class="opt">(sai na notinha)</span></span><input id="pdv-obs" maxlength="300" value="${esc(sale.obs)}" placeholder="Ex.: garantia de 90 dias"></label>
-      <button class="btn ${devol ? "btn--dark" : "btn--primary"} btn--block" data-pdv-concluir ${falta || !sale.pagamentos.length ? "disabled" : ""}>${icon("i-check")}${devol ? "Concluir devolução" : "Concluir venda"}<kbd>Enter</kbd></button>
+      <button class="btn ${sale.tipo === "venda" ? "btn--primary" : "btn--dark"} btn--block" data-pdv-concluir ${falta || !sale.pagamentos.length ? "disabled" : ""}>${icon("i-check")}${{ venda: "Concluir venda", troca: "Concluir troca", devolucao: "Concluir devolução" }[sale.tipo]}<kbd>Enter</kbd></button>
       <span class="err" id="pdv-pay-err"></span>`;
   }
 
-  // ---- busca de produtos ----
-  let results = [], resultIdx = 0;
+  // ---- busca de produtos (uma caixa por lista: "itens" e, na troca, "devolvidos") ----
+  let results = [], resultIdx = 0, searchAlvo = "itens";
   const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   function buscar(q) {
     const n = norm(q).trim();
@@ -294,36 +364,48 @@
       .filter(Boolean).sort((a, b) => a.score - b.score || (b.p.stock > 0) - (a.p.stock > 0)).slice(0, 8).map((x) => x.p);
   }
   function renderResults() {
-    const ul = $("#pdv-results"), q = $("#pdv-q");
-    if (!ul) return;
+    const ul = $(`#pdv-res-${searchAlvo}`), q = $(`#pdv-q-${searchAlvo}`);
+    if (!ul || !q) return;
+    $$(".pdv__search .pdv__results").forEach((u) => { if (u !== ul) u.hidden = true; });
     ul.hidden = !results.length && !q.value.trim();
     q.setAttribute("aria-expanded", String(!ul.hidden));
+    const voltando = searchAlvo === "devolvidos" || sale.tipo === "devolucao";
     ul.innerHTML = results.length ? results.map((p, i) => `
       <li role="option" id="pdv-r-${i}" aria-selected="${i === resultIdx}" class="${i === resultIdx ? "is-sel" : ""}" data-pdv-add="${esc(p.id)}">
         <span class="row__thumb">${T().media(p)}</span>
-        <span class="res__name"><b>${esc(p.name)}</b><small class="muted">${esc(p.code)} · ${p.stock > 0 ? `${p.stock} em estoque` : '<span class="warn-text">sem estoque</span>'}</small></span>
+        <span class="res__name"><b>${esc(p.name)}</b><small class="muted">${esc(p.code)} · ${voltando ? "volta para o estoque se estiver bom" : p.stock > 0 ? `${p.stock} em estoque` : '<span class="warn-text">sem estoque</span>'}</small></span>
         <span class="num res__price">${money(precoPara(p))}</span>
       </li>`).join("") : `<li class="res__none">Nada encontrado para “${esc(q.value)}”.</li>`;
     q.setAttribute("aria-activedescendant", results.length ? `pdv-r-${resultIdx}` : "");
   }
-  function addProduto(id) {
+  function addProduto(id, alvo = searchAlvo) {
     const p = T().prodBy(id);
     if (!p) return;
+    const lista = alvo === "devolvidos" ? sale.devolvidos : sale.itens;
     const variant = p.variants ? p.variants[0][0] : null;
     const delta = p.variants ? p.variants[0][1] : 0;
-    const existing = sale.itens.find((it) => it.productId === p.id && it.variant === variant);
+    const existing = lista.find((it) => it.productId === p.id && it.variant === variant);
     if (existing) existing.qty++;
-    else sale.itens.push({ productId: p.id, name: p.name, code: p.code, variant, qty: 1, unit: precoPara(p) + delta, desconto: 0, custo: p.cost || 0 });
-    if (sale.tipo === "venda" && p.stock <= 0) T().toast(`${p.name} está sem estoque no sistema. Confira antes de vender.`);
+    else {
+      const item = { productId: p.id, name: p.name, code: p.code, variant, qty: 1, unit: precoPara(p) + delta, desconto: 0, custo: p.cost || 0 };
+      if (alvo === "devolvidos" || sale.tipo === "devolucao") item.estado = "bom";
+      lista.push(item);
+    }
+    if (alvo === "itens" && sale.tipo !== "devolucao" && p.stock <= 0) T().toast(`${p.name} está sem estoque no sistema. Confira antes de entregar.`);
     results = []; saveSale(); renderPdv();
+    // na troca, depois de lançar o que voltou, já posiciona na busca do produto novo
+    if (alvo === "devolvidos" && !sale.itens.length) $("#pdv-q-itens")?.focus();
+    else $(`#pdv-q-${alvo}`)?.focus();
   }
 
-  // ---- clientes (cadastros do site + clientes de vendas anteriores) ----
+  // ---- clientes (cadastros do site + clientes do balcão no servidor + usados recentemente) ----
   function clientesConhecidos() {
     const list = T().users().map((u) => ({
       nome: u.type === "lojista" ? (u.fantasia || u.razao) : u.name, doc: u.cnpj || u.cpf || "", telefone: u.phone || "", tipo: u.type === "lojista" ? "lojista" : "cliente",
     }));
-    store.get("ts_pdv_clientes", []).forEach((c) => { if (!list.some((x) => norm(x.nome) === norm(c.nome))) list.push(c); });
+    const add = (c) => { if (c?.nome && !list.some((x) => norm(x.nome) === norm(c.nome) && (x.doc || "") === (c.doc || ""))) list.push(c); };
+    (setup?.clientes || []).forEach(add);
+    store.get("ts_pdv_clientes", []).forEach(add);
     return list;
   }
   function renderCliResults(q) {
@@ -331,43 +413,64 @@
     if (!ul) return;
     const n = norm(q).trim();
     if (!n) { ul.hidden = true; return; }
-    const found = clientesConhecidos().filter((c) => norm(`${c.nome} ${c.doc} ${c.telefone}`).includes(n)).slice(0, 6);
+    const found = clientesConhecidos().filter((c) => norm(`${c.nome} ${c.doc} ${c.telefone}`).includes(n) || (T().digits(q).length >= 3 && T().digits(`${c.doc}${c.telefone}`).includes(T().digits(q)))).slice(0, 6);
     ul.hidden = false;
     ul.innerHTML = found.map((c, i) => `<li role="option" data-pdv-cli="${i}"><span class="res__name"><b>${esc(c.nome)}</b><small class="muted">${esc([c.doc, c.telefone].filter(Boolean).join(" · "))}</small></span>${c.tipo === "lojista" ? '<span class="tag tag--pro">Lojista</span>' : ""}</li>`).join("")
-      + `<li role="option" data-pdv-cli-new><span class="res__name"><b>Usar “${esc(q.trim())}”</b><small class="muted">Cliente sem cadastro</small></span></li>`;
+      + `<li role="option" data-cli-new><span class="res__name"><b>${icon("i-plus")} Cadastrar “${esc(q.trim())}”</b><small class="muted">Cliente novo, com CPF ou CNPJ e WhatsApp</small></span></li>`
+      + `<li role="option" data-pdv-cli-new><span class="res__name"><b>Usar só o nome</b><small class="muted">Sem cadastro</small></span></li>`;
     ul._found = found;
   }
   function setCliente(c) {
     sale.cliente = c;
+    cliForm = null;
     // ao trocar para lojista (ou voltar para consumidor), recalcula os preços que não foram editados à mão
-    sale.itens.forEach((it) => {
+    [...sale.itens, ...sale.devolvidos].forEach((it) => {
       const p = T().prodBy(it.productId);
       if (p && !it.editado) it.unit = precoPara(p) + (p.variants?.find(([n]) => n === it.variant)?.[1] || 0);
     });
-    if (c && !T().users().some((u) => norm(u.name || u.razao) === norm(c.nome))) {
+    if (c) {
       const rec = store.get("ts_pdv_clientes", []).filter((x) => norm(x.nome) !== norm(c.nome));
       store.set("ts_pdv_clientes", [c, ...rec].slice(0, 200));
     }
     saveSale(); renderPdv();
   }
+  async function salvarClienteNovo(f) {
+    const nome = f.nome.value.trim(), doc = f.doc.value.trim(), tel = f.phone.value.trim();
+    const dig = T().digits(doc);
+    const erros = {
+      nome: nome.length < 2 ? "Informe o nome" : "",
+      doc: !dig ? "" : dig.length === 11 ? "" : dig.length === 14 ? "" : "CPF tem 11 dígitos e CNPJ tem 14",
+      phone: !tel || T().digits(tel).length >= 10 ? "" : "WhatsApp incompleto",
+    };
+    Object.entries(erros).forEach(([k, m]) => T().setErr(f, k, m));
+    if (Object.values(erros).some(Boolean)) return;
+    const btn = f.querySelector("button.btn"); btn.disabled = true;
+    try {
+      const { cliente, existente } = await api("r=clientes", "POST", { nome, doc, telefone: tel, tipo: f.tipo.value });
+      setup.clientes = [cliente, ...(setup.clientes || []).filter((x) => x.id !== cliente.id)];
+      if (existente) T().toast(`${cliente.nome} já estava cadastrado. Usando o cadastro existente.`);
+      setCliente({ nome: cliente.nome, doc: cliente.doc, telefone: cliente.telefone, tipo: cliente.tipo });
+    } catch (err) { btn.disabled = false; T().toast(err.message); }
+  }
 
   // ---- concluir ----
   async function concluir() {
-    const btn = $("[data-pdv-concluir]");
+    const btn = $("[data-pdv-concluir]") || $("[data-pdv-pagar]");
     if (!btn || btn.disabled) return;
-    sale.obs = $("#pdv-obs")?.value.trim() || "";
+    sale.obs = $("#pdv-obs")?.value.trim() || sale.obs || "";
     btn.disabled = true;
+    const limpa = (l) => l.map(({ productId, name, code, variant, qty, unit, desconto, custo, estado }) => ({ productId, name, code, variant, qty, unit, desconto, custo, estado }));
     try {
       const { venda } = await api("r=venda", "POST", {
         lojaId: lojaId(), tipo: sale.tipo, vendedorId: sale.vendedorId, cliente: sale.cliente, obs: sale.obs,
-        itens: sale.itens.map(({ productId, name, code, variant, qty, unit, desconto, custo }) => ({ productId, name, code, variant, qty, unit, desconto, custo })),
-        pagamentos: sale.pagamentos,
+        itens: limpa(sale.itens), devolvidos: limpa(sale.devolvidos),
+        pagamentos: aPagar() ? sale.pagamentos : [],
       });
-      // estoque local: venda tira, devolução devolve
-      sale.itens.forEach((it) => {
-        const p = T().prodBy(it.productId);
-        if (p) p.stock = Math.max(0, p.stock + (sale.tipo === "devolucao" ? it.qty : -it.qty));
-      });
+      // estoque local: o que sai baixa; o que volta bom entra; com defeito não volta ao estoque
+      const mexe = (it, delta) => { const p = T().prodBy(it.productId); if (p) p.stock = Math.max(0, p.stock + delta); };
+      if (sale.tipo === "devolucao") sale.itens.forEach((it) => it.estado !== "defeito" && mexe(it, it.qty));
+      else sale.itens.forEach((it) => mexe(it, -it.qty));
+      sale.devolvidos.forEach((it) => it.estado !== "defeito" && mexe(it, it.qty));
       T().saveProducts();
       store.set("ts_pdv_vendedor", sale.vendedorId);
       sale = novaVenda(); saveSale();
@@ -375,7 +478,7 @@
       mostrarNota(venda);
     } catch (err) {
       btn.disabled = false;
-      const e = $("#pdv-pay-err"); if (e) e.textContent = err.message;
+      const e = $("#pdv-pay-err"); if (e) e.textContent = err.message; else T().toast(err.message);
       if (err.status === 409) { await loadSetup(true); renderPdv(); T().toast(err.message); }
     }
   }
@@ -383,28 +486,38 @@
   // ======================================================================
   // NOTINHA (cupom da venda): tela, impressão, imagem e WhatsApp
   // ======================================================================
+  const TITULO = { venda: "VENDA", devolucao: "DEVOLUÇÃO", troca: "TROCA" };
+  const linhaItem = (it) => `${it.qty}x ${it.name}${it.code ? ` - ${it.code}` : ""}${it.variant ? ` (${it.variant})` : ""}`;
+  const estadoTxt = (it) => (it.estado === "defeito" ? "com defeito" : "bom estado");
   function notaLinhas(v) {
     const L = [];
-    const devol = v.tipo === "devolucao";
     L.push({ t: "TOP SMART", a: "c", b: 1, s: 1.5 }, { t: v.lojaNome, a: "c" }, { t: "WhatsApp (33) 99941-4255", a: "c" }, { sep: 1 });
-    L.push({ t: `${devol ? "DEVOLUÇÃO" : "VENDA"} ${v.code}`, a: "c", b: 1, s: 1.2 });
+    L.push({ t: `${TITULO[v.tipo] || "VENDA"} ${v.code}`, a: "c", b: 1, s: 1.2 });
     L.push({ l: "Data", r: `${new Date(v.criadaEm).toLocaleDateString("pt-BR")} ${hora(v.criadaEm)}` });
     L.push({ l: "Cliente", r: v.cliente?.nome || "Ao consumidor" });
     if (v.cliente?.doc) L.push({ l: v.cliente.tipo === "lojista" ? "CNPJ" : "CPF", r: v.cliente.doc });
     L.push({ l: "Vendedor", r: v.vendedor.nome }, { sep: 1 });
-    v.itens.forEach((it) => {
-      L.push({ t: `${it.qty}x ${it.name}${it.code ? ` - ${it.code}` : ""}${it.variant ? ` (${it.variant})` : ""}`, wrap: 1 });
-      L.push({ l: `   ${it.qty} x ${money(it.unit)}${it.desconto ? ` - desc. ${money(it.desconto)}` : ""}`, r: money(it.sub) });
+    const bloco = (lista, comEstado) => lista.forEach((it) => {
+      L.push({ t: linhaItem(it), wrap: 1 });
+      L.push({ l: `   ${it.qty} x ${money(it.unit)}${it.desconto ? ` - desc. ${money(it.desconto)}` : ""}${comEstado ? ` · ${estadoTxt(it)}` : ""}`, r: money(it.sub) });
     });
-    L.push({ sep: 1 }, { l: devol ? "TOTAL DEVOLVIDO" : "TOTAL", r: money(v.total), b: 1, s: 1.2 }, { sep: 1 });
+    if (v.tipo === "troca") {
+      L.push({ t: "DEVOLVEU", b: 1 }); bloco(v.devolvidos, true);
+      L.push({ l: "Crédito", r: `-${money(v.voltou)}` }, { sep: 1 });
+      L.push({ t: "LEVOU", b: 1 }); bloco(v.itens, false);
+      L.push({ l: "Total levado", r: money(v.levado) }, { sep: 1 });
+      L.push({ l: v.diferenca > 0 ? "CLIENTE PAGOU" : v.diferenca < 0 ? "DEVOLVIDO AO CLIENTE" : "SEM DIFERENÇA", r: money(Math.abs(v.diferenca)), b: 1, s: 1.15 }, { sep: 1 });
+    } else {
+      bloco(v.itens, v.tipo === "devolucao");
+      L.push({ sep: 1 }, { l: v.tipo === "devolucao" ? "TOTAL DEVOLVIDO" : "TOTAL", r: money(v.total), b: 1, s: 1.2 }, { sep: 1 });
+    }
     v.pagamentos.forEach((p) => L.push({ l: FORMAS[p.forma], r: money(p.recebido ?? p.valor) }));
     if (v.troco) L.push({ l: "Troco", r: money(v.troco) });
     if (v.pagamentos.some((p) => p.forma === "fiado")) L.push({ t: "Valor no fiado: a pagar na loja.", a: "c" });
     if (v.obs) L.push({ sep: 1 }, { t: `Obs.: ${v.obs}`, wrap: 1 });
     L.push({ sep: 1 }, { t: "Obrigado pela preferência!", a: "c" }, { t: "Aqui tem inovação!", a: "c" });
     return L;
-  }
-  function notaHTML(v) {
+  }  function notaHTML(v) {
     const rows = notaLinhas(v).map((x) => {
       if (x.sep) return '<div class="rc__cut"></div>';
       if (x.l !== undefined) return `<div class="rc__row ${x.b ? "rc__row--b" : ""}"><span>${esc(x.l)}</span><span>${esc(x.r)}</span></div>`;
@@ -413,17 +526,19 @@
     return `<div class="receipt-wrap"><article class="receipt nota" id="rc-${esc(v.code)}">${rows}</article></div>`;
   }
   function notaTexto(v) {
-    const devol = v.tipo === "devolucao";
+    const item = (it, comEstado) => `*${it.qty}x* ${it.name}${it.code ? ` - ${it.code}` : ""}${it.variant ? ` (${it.variant})` : ""}${comEstado ? ` (${estadoTxt(it)})` : ""} - *${money(it.sub)}*`;
+    const corpo = v.tipo === "troca"
+      ? ["Devolveu:", ...v.devolvidos.map((it) => item(it, true)), "", "Levou:", ...v.itens.map((it) => item(it)), "",
+        v.diferenca > 0 ? `Diferença paga: *${money(v.diferenca)}*` : v.diferenca < 0 ? `Devolvido ao cliente: *${money(-v.diferenca)}*` : "Troca sem diferença de valor"]
+      : [...v.itens.map((it) => item(it, v.tipo === "devolucao")), "", `${v.tipo === "devolucao" ? "Total devolvido" : "Total"}: *${money(v.total)}*`];
     return [
-      `*${devol ? "DEVOLUÇÃO" : "VENDA"} ${v.code}*`, `${v.lojaNome} · ${new Date(v.criadaEm).toLocaleDateString("pt-BR")} ${hora(v.criadaEm)}`, "",
+      `*${TITULO[v.tipo] || "VENDA"} ${v.code}*`, `${v.lojaNome} · ${new Date(v.criadaEm).toLocaleDateString("pt-BR")} ${hora(v.criadaEm)}`, "",
       `Cliente: ${v.cliente?.nome || "Ao consumidor"}`, `Vendedor: ${v.vendedor.nome}`, "",
-      ...v.itens.map((it) => `*${it.qty}x* ${it.name}${it.code ? ` - ${it.code}` : ""}${it.variant ? ` (${it.variant})` : ""} - *${money(it.sub)}*`), "",
-      `Total: *${money(v.total)}*`,
-      `Pagamento: ${v.pagamentos.map((p) => `${FORMAS[p.forma]} ${money(p.recebido ?? p.valor)}`).join(" + ")}${v.troco ? ` (troco ${money(v.troco)})` : ""}`,
+      ...corpo,
+      ...(v.pagamentos.length ? [`Pagamento: ${v.pagamentos.map((p) => `${FORMAS[p.forma]} ${money(p.recebido ?? p.valor)}`).join(" + ")}${v.troco ? ` (troco ${money(v.troco)})` : ""}`] : []),
       ...(v.obs ? ["", `Obs.: ${v.obs}`] : []),
     ].join("\n");
   }
-
   // desenha a notinha num canvas (PNG) para mandar como imagem no WhatsApp
   function notaPNG(v) {
     const W = 600, pad = 36, base = 22, lh = 1.45;
@@ -471,7 +586,7 @@
     }
     const tel = T().digits(v.cliente?.telefone);
     dlg.innerHTML = `
-      <div class="nota__head"><div class="order-badge">${icon("i-check")}${v.tipo === "devolucao" ? "Devolução registrada" : "Venda concluída"}</div><button class="icon-btn icon-btn--sm" data-close-modal aria-label="Fechar">${icon("i-x")}</button></div>
+      <div class="nota__head"><div class="order-badge">${icon("i-check")}${{ devolucao: "Devolução registrada", troca: "Troca concluída" }[v.tipo] || "Venda concluída"}</div><button class="icon-btn icon-btn--sm" data-close-modal aria-label="Fechar">${icon("i-x")}</button></div>
       <h2 id="nota-title" class="sr-only">Notinha ${esc(v.code)}</h2>
       <div class="nota__paper">${notaHTML(v)}</div>
       <div class="nota__actions">
@@ -556,7 +671,7 @@
                 <li class="${v.status === "CANCELADA" ? "is-cancel" : ""}">
                   <span class="vlist__time num">${hora(v.criadaEm)}</span>
                   <span class="vlist__who"><b>${esc(v.code)}</b> ${esc(v.cliente?.nome || "Ao consumidor")}<small class="muted">${esc(v.vendedor.nome)} · ${v.pagamentos.map((p) => FORMAS[p.forma]).join(" + ")}${v.status === "CANCELADA" ? " · cancelada" : ""}</small></span>
-                  <span class="num vlist__val ${v.tipo === "devolucao" ? "neg" : ""}">${v.tipo === "devolucao" ? "-" : ""}${money(v.total)}</span>
+                  <span class="num vlist__val ${v.tipo === "devolucao" || v.diferenca < 0 ? "neg" : ""}">${v.tipo === "devolucao" || v.diferenca < 0 ? "-" : ""}${money(v.total)}${v.tipo === "troca" ? "<small>troca</small>" : ""}</span>
                   <span class="vlist__act">
                     <button class="icon-btn icon-btn--sm" data-caixa-nota="${esc(v.code)}" aria-label="Ver notinha ${esc(v.code)}">${icon("i-receipt")}</button>
                     ${v.status !== "CANCELADA" ? `<button class="icon-btn icon-btn--sm" data-caixa-cancel="${esc(v.code)}" aria-label="Cancelar ${esc(v.code)}">${icon("i-x")}</button>` : ""}
@@ -679,23 +794,30 @@
   let relatorio = null;
   function montarRelatorio(vendas) {
     const prods = {}, formas = {}, vends = {};
-    let qtd = 0, custo = 0, fat = 0;
+    let qtd = 0, custo = 0, fat = 0, perdas = 0;
+    // sai: venda e o que o cliente levou na troca. volta: devolução e o que o cliente trouxe na troca.
+    // o que volta bom recupera o custo (volta ao estoque); com defeito, o custo vira perda.
+    const conta = (it, sinal) => {
+      const k = `${it.name}|${it.code}`;
+      const p = (prods[k] ||= { name: it.name, code: it.code, qtd: 0, custo: 0, valor: 0 });
+      const c = sinal > 0 || it.estado !== "defeito" ? sinal * it.custo * it.qty : 0;
+      if (sinal < 0 && it.estado === "defeito") perdas += it.custo * it.qty;
+      p.qtd += sinal * it.qty; p.custo += c; p.valor += sinal * it.sub;
+      qtd += sinal * it.qty; custo += c; fat += sinal * it.sub;
+    };
     for (const v of vendas) {
-      const s = v.tipo === "devolucao" ? -1 : 1;
-      for (const it of v.itens) {
-        const k = `${it.name}|${it.code}`;
-        const p = (prods[k] ||= { name: it.name, code: it.code, qtd: 0, custo: 0, valor: 0 });
-        p.qtd += s * it.qty; p.custo += s * it.custo * it.qty; p.valor += s * it.sub;
-        qtd += s * it.qty; custo += s * it.custo * it.qty; fat += s * it.sub;
-      }
+      if (v.tipo === "devolucao") v.itens.forEach((it) => conta(it, -1));
+      else v.itens.forEach((it) => conta(it, 1));
+      (v.devolvidos || []).forEach((it) => conta(it, -1));
+      const s = v.tipo === "devolucao" || (v.tipo === "troca" && v.diferenca < 0) ? -1 : 1;
       v.pagamentos.forEach((pg) => (formas[pg.forma] = (formas[pg.forma] || 0) + s * pg.valor));
       const vd = (vends[v.vendedor.nome] ||= { nome: v.vendedor.nome, vendas: 0, valor: 0 });
-      if (s > 0) vd.vendas++; vd.valor += s * v.total;
+      if (v.tipo === "venda") vd.vendas++;
+      vd.valor += s * v.total;
     }
     const lista = Object.values(prods).map((p) => ({ ...p, lucro: p.valor - p.custo, medio: p.qtd ? p.custo / p.qtd : 0 })).sort((a, b) => b.valor - a.valor);
-    return { vendas, lista, formas, vends: Object.values(vends).sort((a, b) => b.valor - a.valor), qtd, custo, fat, lucro: fat - custo };
+    return { vendas, lista, formas, vends: Object.values(vends).sort((a, b) => b.valor - a.valor), qtd, custo, fat, lucro: fat - custo, perdas };
   }
-
   function relatorioHTML(R, vis) {
     const margem = R.fat ? (R.lucro / R.fat) * 100 : 0;
     const tabs = { produtos: "Produtos vendidos", formas: "Formas de pagamento", vendedores: "Vendedores", vendas: "Vendas" };
@@ -705,7 +827,7 @@
         <tfoot><tr><td>Total</td><td class="r num">${R.qtd}</td><td></td><td class="r num">${money(R.custo)}</td><td class="r num">${money(R.fat)}</td><td class="r num"><b>${money(R.lucro)}</b></td></tr></tfoot></table>` : "",
       formas: () => `<table class="rep__table"><thead><tr><th>Forma</th><th class="r">Recebido</th><th class="r">Parte</th></tr></thead><tbody>${Object.entries(R.formas).sort((a, b) => b[1] - a[1]).map(([f, v]) => `<tr><td>${FORMAS[f]}</td><td class="r num">${money(v)}</td><td class="r num">${R.fat ? Math.round((v / R.fat) * 100) : 0}%</td></tr>`).join("")}</tbody></table>`,
       vendedores: () => `<table class="rep__table"><thead><tr><th>Vendedor</th><th class="r">Vendas</th><th class="r">Valor</th><th class="r">Ticket médio</th></tr></thead><tbody>${R.vends.map((v) => `<tr><td>${esc(v.nome)}</td><td class="r num">${v.vendas}</td><td class="r num">${money(v.valor)}</td><td class="r num">${money(v.vendas ? v.valor / v.vendas : 0)}</td></tr>`).join("")}</tbody></table>`,
-      vendas: () => `<table class="rep__table"><thead><tr><th>Venda</th><th>Data</th><th>Cliente</th><th>Vendedor</th><th>Pagamento</th><th class="r">Total</th></tr></thead><tbody>${[...R.vendas].sort((a, b) => b.criadaEm.localeCompare(a.criadaEm)).map((v) => `<tr><td><b>${esc(v.code)}</b></td><td class="num">${dia(v.criadaEm)} ${hora(v.criadaEm)}</td><td>${esc(v.cliente?.nome || "Ao consumidor")}</td><td>${esc(v.vendedor.nome)}</td><td>${v.pagamentos.map((p) => FORMAS[p.forma]).join(" + ")}</td><td class="r num ${v.tipo === "devolucao" ? "neg" : ""}">${v.tipo === "devolucao" ? "-" : ""}${money(v.total)}</td></tr>`).join("")}</tbody></table>`,
+      vendas: () => `<table class="rep__table"><thead><tr><th>Venda</th><th>Data</th><th>Cliente</th><th>Vendedor</th><th>Pagamento</th><th class="r">Total</th></tr></thead><tbody>${[...R.vendas].sort((a, b) => b.criadaEm.localeCompare(a.criadaEm)).map((v) => `<tr><td><b>${esc(v.code)}</b></td><td class="num">${dia(v.criadaEm)} ${hora(v.criadaEm)}</td><td>${esc(v.cliente?.nome || "Ao consumidor")}</td><td>${esc(v.vendedor.nome)}</td><td>${v.pagamentos.map((p) => FORMAS[p.forma]).join(" + ")}</td><td class="r num ${v.tipo === "devolucao" || v.diferenca < 0 ? "neg" : ""}">${v.tipo === "devolucao" || v.diferenca < 0 ? "-" : ""}${money(v.total)}</td></tr>`).join("")}</tbody></table>`,
     };
     return `
       <section class="report">
@@ -713,12 +835,13 @@
         <div class="stats stats--rep">
           ${stat("Quantidade", R.qtd, "itens vendidos")}
           ${stat("Custo total", money(R.custo), "custo das peças")}
-          ${stat("Valor total", money(R.fat), (() => { const n = R.vendas.filter((v) => v.tipo !== "devolucao").length; return `${n} ${n === 1 ? "venda" : "vendas"}`; })())}
+          ${stat("Valor total", money(R.fat), (() => { const n = R.vendas.filter((v) => v.tipo === "venda").length, t = R.vendas.filter((v) => v.tipo === "troca").length; return `${n} ${n === 1 ? "venda" : "vendas"}${t ? ` · ${t} ${t === 1 ? "troca" : "trocas"}` : ""}`; })())}
           ${stat("Lucro", money(R.lucro), `margem de ${margem.toFixed(1).replace(".", ",")}%`, "stat--main")}
         </div>
         ${R.vendas.length ? `
         <div class="rep__tabs no-print" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" aria-selected="${vis === k}" class="${vis === k ? "is-on" : ""}" data-rep-vis="${k}">${v}</button>`).join("")}</div>
         <div class="table-wrap">${tabela[vis]?.() || tabela.produtos()}</div>
+        ${R.perdas ? `<p class="rep__note rep__note--perda">Produtos devolvidos com defeito: ${money(R.perdas)} de custo perdido, já descontado do lucro.</p>` : ""}
         ${R.lista.some((p) => !p.custo) ? `<p class="muted rep__note no-print">Produtos sem preço de custo contam lucro igual ao valor de venda. Preencha o custo em Produtos.</p>` : ""}`
         : `<div class="empty">Nenhuma venda neste período.</div>`}
       </section>`;
@@ -772,24 +895,35 @@
   // EVENTOS
   // ======================================================================
   document.addEventListener("click", async (e) => {
-    const t = e.target.closest("button, a, li[data-pdv-add], li[data-pdv-cli], li[data-pdv-cli-new]");
+    const t = e.target.closest("button, a, li[data-pdv-add], li[data-pdv-cli], li[data-pdv-cli-new], li[data-cli-new]");
     if (!t) return;
     const d = t.dataset;
     if ("pdvRetry" in d) return T().router();
     // ---- venda balcão ----
-    if (d.pdvAdd) return addProduto(d.pdvAdd);
-    if (d.pdvDel) { sale.itens.splice(+d.pdvDel, 1); saveSale(); return renderPdv(); }
-    if (d.pdvTipo) { if (sale.tipo !== d.pdvTipo) { sale.tipo = d.pdvTipo; sale.pagamentos = []; sale.etapa = "itens"; saveSale(); renderPdv(); } return; }
+    if (d.pdvAdd) return addProduto(d.pdvAdd, t.closest(".pdv__results")?.id.replace("pdv-res-", "") || "itens");
+    if (d.pdvDel) { const [alvo, i] = d.pdvDel.split(":"); sale[alvo].splice(+i, 1); saveSale(); return renderPdv(); }
+    if (d.pdvTipo) {
+      if (sale.tipo !== d.pdvTipo) {
+        // ao sair da troca, os produtos devolvidos deixam de valer; na devolução, os itens ganham o campo de estado
+        sale.tipo = d.pdvTipo; sale.pagamentos = []; sale.etapa = "itens";
+        if (d.pdvTipo !== "troca") sale.devolvidos = [];
+        sale.itens.forEach((it) => { if (d.pdvTipo === "devolucao") it.estado ||= "bom"; else delete it.estado; });
+        saveSale(); renderPdv();
+      }
+      return;
+    }
+    if ("cliNew" in d) { cliForm = { nome: $("#pdv-cli")?.value.trim() || "", tipo: "cliente" }; renderPdv(); setTimeout(() => $("#cli-form [name=" + (cliForm?.nome ? "doc" : "nome") + "]")?.focus(), 30); return; }
+    if ("cliCancel" in d) { cliForm = null; return renderPdv(); }
     if ("pdvCliClear" in d) return setCliente(null);
     if (d.pdvCli !== undefined && t.closest("#pdv-cli-results")) return setCliente($("#pdv-cli-results")._found[+d.pdvCli]);
     if ("pdvCliNew" in d) return setCliente({ nome: $("#pdv-cli").value.trim(), doc: "", telefone: "", tipo: "cliente" });
     if ("pdvPagar" in d) return irPagamento();
     if ("pdvVoltar" in d) { sale.etapa = "itens"; saveSale(); return renderPdv(); }
     if (d.pdvForma) {
-      const falta = Math.max(0, Math.round((totalItens() - totalPago()) * 100) / 100);
+      const falta = Math.max(0, Math.round((aPagar() - totalPago()) * 100) / 100);
       const ja = sale.pagamentos.find((p) => p.forma === d.pdvForma);
       if (ja) ja.valor = Math.round((ja.valor + falta) * 100) / 100;
-      else sale.pagamentos.push({ forma: d.pdvForma, valor: falta || (sale.pagamentos.length ? 0 : totalItens()) });
+      else sale.pagamentos.push({ forma: d.pdvForma, valor: falta || (sale.pagamentos.length ? 0 : aPagar()) });
       saveSale(); renderPdv();
       const i = sale.pagamentos.findIndex((p) => p.forma === d.pdvForma);
       $(`#pdv-pay-${i}`)?.select();
@@ -808,7 +942,7 @@
       store.set("ts_pdv_espera", list); saveSale(); return renderPdv();
     }
     if ("pdvClear" in d) { if (confirm("Limpar todos os itens desta venda?")) { sale = { ...novaVenda(), tipo: sale.tipo }; saveSale(); renderPdv(); } return; }
-    if ("pdvFocus" in d) return setTimeout(() => $("#pdv-q")?.focus(), 50);
+    if ("pdvFocus" in d) return setTimeout(() => $(".pdv-q")?.focus(), 50);
     // ---- notinha ----
     if ("notaShare" in d) return compartilharNota();
     if ("notaPng" in d) return baixarNota();
@@ -853,13 +987,14 @@
   }
 
   function irPagamento() {
-    if (!sale.itens.length) return;
+    if (!prontoParaPagar()) return;
     if (!sale.vendedorId) {
       const e = $("#pdv-vend-err"); if (e) e.textContent = "Escolha o vendedor";
       $("#pdv-vend")?.focus(); return;
     }
+    // troca de mesmo valor: não há o que cobrar nem devolver
+    if (sale.tipo === "troca" && aPagar() === 0) { sale.pagamentos = []; saveSale(); return concluir(); }
     sale.etapa = "pagamento";
-    if (!sale.pagamentos.length && sale.tipo === "venda") sale.pagamentos = [];
     saveSale(); renderPdv();
   }
 
@@ -871,7 +1006,8 @@
 
   document.addEventListener("input", (e) => {
     const t = e.target;
-    if (t.id === "pdv-q") { results = buscar(t.value); resultIdx = 0; renderResults(); return; }
+    if (t.classList.contains("pdv-q")) { searchAlvo = t.dataset.alvo; results = buscar(t.value); resultIdx = 0; renderResults(); return; }
+    if (t.dataset.maskDoc !== undefined) { t.value = fmtDoc(t.value); return; }
     if (t.id === "pdv-cli") return renderCliResults(t.value);
     if (t.dataset.pdvPay !== undefined) {
       sale.pagamentos[+t.dataset.pdvPay].valor = parseMoney(t.value); saveSale();
@@ -892,7 +1028,9 @@
     if (t.dataset.pdvLoja !== undefined) { store.set("ts_loja", t.value); sale.vendedorId = ""; saveSale(); return T().router(); }
     if (t.dataset.pdvVend !== undefined) { sale.vendedorId = t.value; store.set("ts_pdv_vendedor", t.value); saveSale(); const er = $("#pdv-vend-err"); if (er) er.textContent = ""; return; }
     if (t.dataset.pdvItem !== undefined) {
-      const it = sale.itens[+t.dataset.pdvItem], f = t.dataset.field;
+      const [alvo, i] = t.dataset.pdvItem.split(":");
+      const it = sale[alvo][+i], f = t.dataset.field;
+      if (f === "estado") it.estado = t.value === "defeito" ? "defeito" : "bom";
       if (f === "qty") it.qty = Math.max(1, parseInt(t.value, 10) || 1);
       if (f === "unit") { it.unit = parseMoney(t.value); it.editado = true; }
       if (f === "desconto") it.desconto = Math.min(parseMoney(t.value), it.unit * it.qty);
@@ -907,13 +1045,14 @@
   document.addEventListener("keydown", (e) => {
     if (!location.hash.includes("aba=balcao")) return;
     if (document.querySelector("dialog[open]")) return;
-    if (e.key === "F2") { e.preventDefault(); $("#pdv-q")?.focus(); return; }
+    if (e.key === "F2") { e.preventDefault(); $(".pdv-q")?.focus(); return; }
     if (e.key === "F9") { e.preventDefault(); if (sale.etapa === "itens") irPagamento(); return; }
     const t = e.target;
-    if (t.id === "pdv-q") {
+    if (t.classList.contains("pdv-q")) {
+      searchAlvo = t.dataset.alvo;
       if (e.key === "ArrowDown" && results.length) { e.preventDefault(); resultIdx = (resultIdx + 1) % results.length; renderResults(); }
       else if (e.key === "ArrowUp" && results.length) { e.preventDefault(); resultIdx = (resultIdx - 1 + results.length) % results.length; renderResults(); }
-      else if (e.key === "Enter") { e.preventDefault(); if (results[resultIdx]) addProduto(results[resultIdx].id); }
+      else if (e.key === "Enter") { e.preventDefault(); if (results[resultIdx]) addProduto(results[resultIdx].id, searchAlvo); }
       else if (e.key === "Escape") { t.value = ""; results = []; renderResults(); }
       return;
     }
@@ -929,6 +1068,7 @@
 
   document.addEventListener("submit", async (e) => {
     const f = e.target;
+    if (f.id === "cli-form") { e.preventDefault(); return salvarClienteNovo(f); }
     if (f.id === "abrir-form") {
       e.preventDefault();
       const btn = f.querySelector("button"); btn.disabled = true;
