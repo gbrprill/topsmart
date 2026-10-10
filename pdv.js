@@ -651,15 +651,18 @@
   function viewRelatorios() {
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
     const p = params.get("p") || (params.get("de") ? "custom" : "mes");
-    const { de, ate } = p === "custom" ? { de: params.get("de") || iso(new Date()), ate: params.get("ate") || iso(new Date()) } : periodo(p);
+    // datas vêm do endereço (#...&de=&ate=): só aceita AAAA-MM-DD, nunca texto livre
+    const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+    const dataOk = (v) => (isoRe.test(v || "") ? v : iso(new Date()));
+    const { de, ate } = p === "custom" ? { de: dataOk(params.get("de")), ate: dataOk(params.get("ate")) } : periodo(p);
     const vis = params.get("vis") || "produtos";
     const lojaSel = params.get("loja") ?? "";
     return `<div class="admin-head no-print"><div><h1>Relatórios</h1></div>
         <div class="rep__tools"><button class="btn btn--ghost btn--sm" data-rep-csv>${icon("i-download")}Planilha</button><button class="btn btn--dark btn--sm" data-rep-print>${icon("i-print")}Imprimir ou PDF</button></div></div>
       <form class="rep__filters no-print" id="rep-form">
         <div class="seg" role="radiogroup" aria-label="Período">${Object.entries(PERIODOS).map(([k, v]) => `<button type="button" role="radio" aria-checked="${p === k}" class="${p === k ? "is-on" : ""}" data-rep-p="${k}">${v}</button>`).join("")}</div>
-        <label class="rep__date"><span>De</span><input type="date" name="de" value="${de}"></label>
-        <label class="rep__date"><span>Até</span><input type="date" name="ate" value="${ate}"></label>
+        <label class="rep__date"><span>De</span><input type="date" name="de" value="${esc(de)}"></label>
+        <label class="rep__date"><span>Até</span><input type="date" name="ate" value="${esc(ate)}"></label>
         <span id="rep-loja"></span>
       </form>
       ${asyncView("rep-root", skel(6), async () => {
