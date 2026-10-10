@@ -1,12 +1,12 @@
 // "Avise-me": clientes pedem aviso quando um produto esgotado voltar ao estoque.
 //
 // POST   /api/alerts               cliente registra o pedido de aviso (e-mail e/ou WhatsApp)
-// GET    /api/alerts               admin lista os pedidos de aviso (header x-admin-key)
-// PUT    /api/alerts?id=...        admin marca como avisado ou pendente (header x-admin-key)
-// DELETE /api/alerts?id=...        admin remove o pedido de aviso (header x-admin-key)
+// GET    /api/alerts               admin lista os pedidos de aviso (Authorization: Bearer <sessão do admin>)
+// PUT    /api/alerts?id=...        admin marca como avisado ou pendente (Authorization: Bearer <sessão do admin>)
+// DELETE /api/alerts?id=...        admin remove o pedido de aviso (Authorization: Bearer <sessão do admin>)
 
 import { randomUUID } from "node:crypto";
-import { hasRedis, redis, bumpVersion, str, isAdmin } from "./_shared.js";
+import { hasRedis, redis, bumpVersion, str, isAdmin, rateLimit } from "./_shared.js";
 
 const LIST = "ts:alerts";
 const key = (id) => `ts:alert:${id}`;
@@ -18,6 +18,7 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "POST") {
+      if (!(await rateLimit(req, "alert", 20, 3600))) return res.status(429).json({ error: "Muitos avisos seguidos. Tente de novo mais tarde." });
       const b = req.body || {};
       const product = b.product || {};
       const alert = {

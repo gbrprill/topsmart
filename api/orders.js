@@ -5,11 +5,11 @@
 // POST   /api/orders                      cliente gera o pedido (recebe código e token)
 // PATCH  /api/orders?code=TS-000001       cliente confirma dados (entrega, pagamento...) com o token
 // GET    /api/orders?mine=CODE:TOKEN,...  cliente consulta o status dos próprios pedidos
-// GET    /api/orders?since=N              admin lista pedidos (header x-admin-key)
-// PUT    /api/orders?code=TS-000001       admin muda o status (header x-admin-key)
+// GET    /api/orders?since=N              admin lista pedidos (Authorization: Bearer <sessão do admin>)
+// PUT    /api/orders?code=TS-000001       admin muda o status (Authorization: Bearer <sessão do admin>)
 
 import { randomUUID } from "node:crypto";
-import { hasRedis, redis, bumpVersion, VER_KEY, str, num, isAdmin } from "./_shared.js";
+import { hasRedis, redis, bumpVersion, VER_KEY, str, num, isAdmin, rateLimit } from "./_shared.js";
 
 const K = {
   seq: "ts:order_seq",
@@ -49,10 +49,12 @@ export default async function handler(req, res) {
 
     // ---- cliente gera o pedido ----
     if (req.method === "POST") {
+      // no máximo 10 pedidos por hora por IP: evita lotar o painel com pedidos falsos
+      if (!(await rateLimit(req, "order", 10, 3600))) return res.status(429).json({ error: "Muitos pedidos seguidos. Tente de novo mais tarde ou chame no WhatsApp." });
       const b = req.body || {};
       const items = Array.isArray(b.items) ? b.items.slice(0, 100).map((it) => ({
         name: str(it.name, 160), variant: str(it.variant, 60) || null,
-        qty: Math.max(1, Math.min(999, parseInt(it.qty, 10) || 1)), unit: num(it.unit),
+        qty: Math.max(1, Math.min(999, parseInt(it.qty, 10) || 1)), unit: Math.max(0, Math.min(1e6, num(it.unit))),
       })).filter((it) => it.name) : [];
       if (!items.length) return res.status(400).json({ error: "Carrinho vazio" });
       items.forEach((it) => (it.sub = num(it.unit * it.qty)));
@@ -84,6 +86,7 @@ export default async function handler(req, res) {
 
     // ---- cliente confirma entrega, pagamento e observação ----
     if (req.method === "PATCH") {
+      if (!(await rateLimit(req, "order-confirm", 30, 3600))) return res.status(429).json({ error: "Muitas tentativas. Tente de novo mais tarde." });
       const order = code && (await getOrder(code));
       if (!order) return res.status(404).json({ error: "Pedido não encontrado" });
       const b = req.body || {};

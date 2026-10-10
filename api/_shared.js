@@ -1,9 +1,10 @@
 // Funções compartilhadas pelas APIs (arquivos com "_" não viram rota na Vercel).
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-const ADMIN_KEY = process.env.ADMIN_KEY || "";
+// Segredo que assina as sessões do admin. Sem ele, nenhuma rota de admin funciona (falha fechada).
+const SESSION_SECRET = process.env.SESSION_SECRET || "";
 
 export const hasRedis = () => Boolean(REDIS_URL && REDIS_TOKEN);
 
@@ -25,8 +26,44 @@ export const bumpVersion = () => redis("INCR", VER_KEY);
 export const str = (v, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 export const num = (v) => (Number.isFinite(+v) ? Math.round(+v * 100) / 100 : 0);
 
+export function safeEqual(a, b) {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+// ---------- sessão do admin: token assinado (HMAC-SHA256) com validade ----------
+const b64url = (s) => Buffer.from(s).toString("base64url");
+const sign = (payload) => createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+
+export function signAdminToken(hours = 12) {
+  if (SESSION_SECRET.length < 32) throw new Error("SESSION_SECRET ausente ou curto");
+  const payload = b64url(JSON.stringify({ role: "ADMIN", exp: Date.now() + hours * 3600_000 }));
+  return { token: `${payload}.${sign(payload)}`, exp: Date.now() + hours * 3600_000 };
+}
+
 export function isAdmin(req) {
-  const given = Buffer.from(String(req.headers["x-admin-key"] || ""));
-  const expected = Buffer.from(ADMIN_KEY);
-  return ADMIN_KEY.length > 0 && given.length === expected.length && timingSafeEqual(given, expected);
+  if (SESSION_SECRET.length < 32) return false;
+  const auth = String(req.headers.authorization || "");
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig || !safeEqual(sig, sign(payload))) return false;
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString());
+    return data.role === "ADMIN" && Number(data.exp) > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+// ---------- limite de requisições por IP (janela fixa no Redis) ----------
+export function clientIp(req) {
+  return String(req.headers["x-real-ip"] || req.headers["x-forwarded-for"] || "anon").split(",")[0].trim().slice(0, 64);
+}
+
+// devolve true se ainda pode; false se passou do limite
+export async function rateLimit(req, bucket, limit, windowSec) {
+  const key = `ts:rl:${bucket}:${clientIp(req)}`;
+  const count = await redis("INCR", key);
+  if (count === 1) await redis("EXPIRE", key, windowSec);
+  return count <= limit;
 }

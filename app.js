@@ -100,8 +100,12 @@
 
   // ---------- contas ----------
   // Usuário administrador já criado. Na versão final: senha com bcrypt no banco, nunca no código.
-  const ADMIN = { type: "admin", name: "Administrador Top Smart", email: "admin@topsmart.com", phone: "(33) 99941-4255", password: "topsmart2026", role: "ADMIN" };
-  const users = () => [ADMIN, ...store.get("ts_users", [])];
+  // O admin entra pelo servidor (/api/admin-login). Nenhuma senha de admin fica no código do site.
+  const users = () => store.get("ts_users", []);
+  const adminAuth = () => {
+    const t = store.get("ts_admin_token", null);
+    return t && t.exp > Date.now() ? `Bearer ${t.token}` : "";
+  };
   const session = () => store.get("ts_session", null);
   function login(user) {
     const { password, ...safe } = user;
@@ -221,7 +225,7 @@
   const ordersApi = {
     async req(method, query = "", body, admin = false) {
       const headers = { "Content-Type": "application/json" };
-      if (admin) headers["x-admin-key"] = store.get("ts_admin_key", "");
+      if (admin) headers.Authorization = adminAuth();
       const r = await fetch(`/api/orders${query}`, { method, headers, body: body ? JSON.stringify(body) : undefined, keepalive: method === "PATCH" });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw Object.assign(new Error(data.error || "Falha na comunicação com a loja"), { status: r.status });
@@ -300,7 +304,7 @@
   };
   async function fetchJSON(url, method, body, admin) {
     const headers = { "Content-Type": "application/json" };
-    if (admin) headers["x-admin-key"] = store.get("ts_admin_key", "");
+    if (admin) headers.Authorization = adminAuth();
     const r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw Object.assign(new Error(data.error || "Falha na comunicação com a loja"), { status: r.status });
@@ -1331,7 +1335,14 @@
         await pollAlerts();
       }
     } catch (err) {
-      adminError = err.status === 401 ? "Sessão do admin expirou. Saia e entre de novo." : `Não foi possível carregar os pedidos (${err.message}).`;
+      if (err.status === 401) {
+        // sessão do admin venceu (12 h) ou é inválida: sai e pede login de novo
+        store.set("ts_session", null); store.set("ts_admin_token", null); stopPolling();
+        toast("Sua sessão de admin expirou. Entre de novo.");
+        location.hash = "#/login";
+        return;
+      }
+      adminError = `Não foi possível carregar os pedidos (${err.message}).`;
       if (!adminOrdersList) rerenderAdminOrders();
     }
   }
@@ -1639,7 +1650,7 @@
       }
     }
     else if ("soon" in d) { e.preventDefault(); toast("Página institucional: conteúdo a definir com o cliente"); }
-    else if ("logout" in d) { store.set("ts_session", null); store.set("ts_admin_key", ""); stopPolling(); toast("Você saiu da conta"); location.hash = "#/"; }
+    else if ("logout" in d) { store.set("ts_session", null); store.set("ts_admin_token", null); stopPolling(); toast("Você saiu da conta"); location.hash = "#/"; }
     else if (d.ordersFilter) { ordersFilter = d.ordersFilter; rerenderAdminOrders(); }
     else if (d.ordersView) {
       ordersView = d.ordersView; store.set("ts_orders_view", ordersView);
@@ -1713,7 +1724,7 @@
     if (ev === "drop" && e.dataTransfer.files[0]) handlePhoto(e.dataTransfer.files[0]);
   }));
 
-  document.addEventListener("submit", (e) => {
+  document.addEventListener("submit", async (e) => {
     const form = e.target;
     if (form.id === "search-form") {
       e.preventDefault();
@@ -1732,10 +1743,19 @@
       if (!validate(form, { email: emailRule, password: req() })) return;
       const email = form.email.value.trim().toLowerCase();
       const u = users().find((x) => x.email.toLowerCase() === email && x.password === form.password.value);
-      if (!u) return setErr(form, "password", "E-mail ou senha incorretos");
-      login(u);
-      if (u.role === "ADMIN") store.set("ts_admin_key", form.password.value);
-      location.hash = u.role === "ADMIN" ? "#/admin?aba=pedidos" : returnTo();
+      if (u) { login(u); location.hash = returnTo(); return; }
+      // não é cliente deste aparelho: tenta o login do admin, que é conferido no servidor
+      if (!REMOTE) return setErr(form, "password", "E-mail ou senha incorretos");
+      const btn = form.querySelector("button.btn--primary");
+      btn.disabled = true;
+      try {
+        const r = await fetch("/api/admin-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password: form.password.value }) });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) return setErr(form, "password", r.status === 401 ? "E-mail ou senha incorretos" : data.error || "Não foi possível entrar");
+        store.set("ts_admin_token", { token: data.token, exp: data.exp });
+        login({ type: "admin", name: data.name, email, role: "ADMIN" });
+        location.hash = "#/admin?aba=pedidos";
+      } finally { btn.disabled = false; }
       return;
     }
     if (form.id === "signup-form") {
