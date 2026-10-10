@@ -4,14 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Top Smart | Peças e Componentes</title>
-  <meta name="description" content="Telas, baterias, películas, capinhas e acessórios para celular. Monte seu pedido e envie pelo WhatsApp.">
+  <meta name="description" content="Telas, baterias, películas, capinhas e acessórios para celular. Cadastro para clientes e lojistas, pedido direto pelo WhatsApp.">
+  <meta property="og:title" content="Top Smart | Peças e Componentes">
+  <meta property="og:image" content="assets/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <a class="skip" href="#main">Pular para o conteúdo</a>
+
+  <div class="topbar">
+    <div class="container topbar__inner">
+      <span>Peças e componentes com retirada na hora</span>
+      <span class="topbar__right">É lojista? <a href="#/login?tipo=lojista">Cadastre seu CNPJ</a></span>
+    </div>
+  </div>
 
   <header class="header">
     <div class="header__bar container">
@@ -19,59 +28,78 @@
         <img src="assets/logo.png" alt="Top Smart Peças e Componentes" width="591" height="220">
       </a>
       <form class="search" id="search-form" role="search">
-        <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-        <input id="search-input" type="search" placeholder="Busque peça ou modelo, ex.: tela iPhone 11" aria-label="Buscar produtos">
+        <input id="search-input" type="search" placeholder="Buscar peça ou modelo, ex.: tela iPhone 11" aria-label="Buscar produtos">
+        <button aria-label="Buscar"><svg class="i"><use href="#i-search"/></svg></button>
       </form>
-      <nav class="header__actions" aria-label="Conta e carrinho">
-        <a href="#/conta" class="icon-btn" id="account-link" aria-label="Minha conta">
+      <div class="header__actions">
+        <a href="#/login" class="account" id="account-link">
           <svg class="i"><use href="#i-user"/></svg>
+          <span class="account__text" id="account-text"><strong>Olá! Faça login</strong><small>Ou cadastre-se</small></span>
         </a>
+        <a href="https://wa.me/5533999414255" target="_blank" rel="noopener" class="icon-btn hide-sm" aria-label="WhatsApp da loja"><svg class="i"><use href="#i-wa"/></svg></a>
         <button class="icon-btn" id="cart-open" aria-label="Abrir carrinho">
           <svg class="i"><use href="#i-bag"/></svg>
           <span class="badge" id="cart-count" hidden>0</span>
         </button>
-      </nav>
+      </div>
     </div>
-    <nav class="header__cats container" aria-label="Categorias" id="header-cats"></nav>
+    <nav class="nav" aria-label="Departamentos">
+      <ul class="nav__list container" id="nav-list"></ul>
+    </nav>
   </header>
 
   <main id="main" tabindex="-1"></main>
+
+  <section class="news">
+    <div class="container news__inner">
+      <div>
+        <h2>Ofertas no seu WhatsApp</h2>
+        <p>Receba as novidades e promoções da Top Smart antes de todo mundo.</p>
+      </div>
+      <form class="news__form" id="news-form">
+        <input name="phone" inputmode="tel" placeholder="Seu WhatsApp" aria-label="Seu WhatsApp" required>
+        <button class="btn btn--light">Quero receber</button>
+      </form>
+    </div>
+  </section>
 
   <footer class="footer">
     <div class="container footer__grid">
       <div>
         <img src="assets/logo.png" alt="Top Smart" class="footer__logo" width="591" height="220">
-        <p class="footer__text">Peças e componentes para celular. Telas, baterias, películas, capinhas e acessórios com pronta entrega.</p>
+        <h3>Sobre nós</h3>
+        <p class="footer__text">Loja de peças e componentes para celular. Atendemos clientes e assistências técnicas com telas, baterias, películas, capinhas e acessórios.</p>
+      </div>
+      <div>
+        <h3>Departamentos</h3>
+        <ul id="footer-cats"></ul>
+      </div>
+      <div>
+        <h3>Institucional</h3>
+        <ul>
+          <li><a href="#/" data-soon>Como comprar</a></li>
+          <li><a href="#/" data-soon>Trocas e devoluções</a></li>
+          <li><a href="#/" data-soon>Garantia</a></li>
+          <li><a href="#/" data-soon>Política de privacidade</a></li>
+          <li><a href="#/login?tipo=lojista">Seja um lojista parceiro</a></li>
+        </ul>
       </div>
       <div>
         <h3>Contato</h3>
-        <ul>
-          <li><a href="https://wa.me/5533999414255" target="_blank" rel="noopener">WhatsApp (33) 99941-4255</a></li>
-          <li>Endereço: <span class="todo">a confirmar</span></li>
-          <li>Instagram: <span class="todo">a confirmar</span></li>
-        </ul>
-      </div>
-      <div>
-        <h3>Horário</h3>
-        <ul>
-          <li>Seg a sex: <span class="todo">a confirmar</span></li>
-          <li>Sábado: <span class="todo">a confirmar</span></li>
-        </ul>
-      </div>
-      <div>
-        <h3>Navegue</h3>
-        <ul>
-          <li><a href="#/catalogo">Catálogo</a></li>
-          <li><a href="#/carrinho">Carrinho</a></li>
-          <li><a href="#/conta">Minha conta</a></li>
-          <li><a href="#/admin">Painel (admin)</a></li>
+        <ul class="footer__contact">
+          <li><svg class="i"><use href="#i-wa"/></svg><a href="https://wa.me/5533999414255" target="_blank" rel="noopener">(33) 99941-4255</a></li>
+          <li><svg class="i"><use href="#i-pin"/></svg><span>Endereço <span class="todo">a confirmar</span></span></li>
+          <li><svg class="i"><use href="#i-clock"/></svg><span>Horário <span class="todo">a confirmar</span></span></li>
+          <li><svg class="i"><use href="#i-insta"/></svg><span>Instagram <span class="todo">a confirmar</span></span></li>
         </ul>
       </div>
     </div>
-    <p class="container footer__copy">© 2026 Top Smart. Aqui tem inovação!</p>
+    <div class="container footer__bottom">
+      <span>© 2026 Top Smart. Aqui tem inovação!</span>
+      <span>Pagamento combinado no WhatsApp: PIX, dinheiro ou cartão</span>
+    </div>
   </footer>
 
-  <!-- Barra flutuante do carrinho (estilo do catálogo de referência) -->
   <button class="cartbar" id="cartbar" hidden>
     <span class="cartbar__count" id="cartbar-count">0</span>
     <span>Ver carrinho</span>
@@ -82,7 +110,6 @@
     <svg class="i"><use href="#i-wa"/></svg>
   </a>
 
-  <!-- Drawer do carrinho -->
   <div class="overlay" id="overlay" hidden></div>
   <aside class="drawer" id="drawer" aria-label="Carrinho" aria-hidden="true">
     <div class="drawer__head">
@@ -93,11 +120,10 @@
     <div class="drawer__foot" id="drawer-foot"></div>
   </aside>
 
-  <!-- Modal nome/telefone para quem não está logado -->
   <dialog class="modal" id="checkout-modal">
     <form method="dialog" id="checkout-form">
       <h2>Quase lá</h2>
-      <p class="muted">Informe seus dados para a loja identificar o pedido.</p>
+      <p class="muted">Confira seus dados para a loja identificar o pedido.</p>
       <label class="field">Nome<input name="name" required autocomplete="name"></label>
       <label class="field">WhatsApp<input name="phone" required inputmode="tel" autocomplete="tel" placeholder="(33) 99999-9999"></label>
       <label class="field">Observação<input name="note" placeholder="Ex.: retirar na loja"></label>
@@ -110,7 +136,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <!-- Ícones (traço estilo lucide) -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
       <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
@@ -120,11 +145,22 @@
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
       <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
       <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13 7 4 4"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+      <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+      <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></symbol>
       <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></symbol>
+      <symbol id="i-store" viewBox="0 0 24 24"><path d="M4 10v10h16V10M3 10l2-6h14l2 6H3Z"/><path d="M9 20v-5h6v5"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4 3 7.5 7 9 4-1.5 7-5 7-9V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6l1-7Z"/></symbol>
+      <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8L3 12Z"/><circle cx="7.5" cy="8.5" r="1.5"/></symbol>
+      <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s7-6 7-11a7 7 0 0 0-14 0c0 5 7 11 7 11Z"/><circle cx="12" cy="10" r="2.5"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-insta" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r=".5"/></symbol>
       <symbol id="i-wa" viewBox="0 0 24 24"><path d="M3.5 20.5 5 16a8.5 8.5 0 1 1 3 3l-4.5 1.5Z"/><path d="M9 8.5c0 3.5 3 6.5 6.5 6.5l1-1.5-2-1-1 .8a5 5 0 0 1-2.3-2.3l.8-1-1-2L9 8.5Z"/></symbol>
-      <!-- categorias -->
       <symbol id="c-telas" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10 5h4"/><path d="m9 13 3-3 3 3" opacity=".5"/></symbol>
       <symbol id="c-peliculas" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M8 8l8-3M8 14l8-3M8 20l8-3" opacity=".6"/></symbol>
       <symbol id="c-capinhas" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="4"/><circle cx="9.5" cy="6.5" r="1.5"/><circle cx="9.5" cy="10.5" r="1.5"/></symbol>

@@ -6,7 +6,9 @@ Inclui home, catálogo com filtros (categoria, marca e modelo do aparelho, preç
 
 Tudo roda no navegador. Carrinho, usuários e pedidos ficam no `localStorage`. A versão final segue o briefing: Next.js, Prisma, PostgreSQL e Auth.js.
 
-- Login admin de demonstração: `admin@topsmart.com` / `admin123`
+- Cadastro em duas modalidades na tela de login: cliente (CPF, nome, nascimento, telefone, e-mail) e lojista (CNPJ, razão social, responsável, telefone, e-mail). CPF e CNPJ são validados.
+- Painel admin (`#/admin`): cadastro de produto com foto, nome, quantidade e preço de venda, além de pedidos e lista de cadastros.
+- Produtos cadastrados no painel ficam salvos só no navegador de quem cadastrou. Para valer para todos os visitantes, é preciso o backend da versão final.
 - Número do WhatsApp da loja: `data.js` (`whatsapp`)
 - Produtos de exemplo: `data.js`
 
