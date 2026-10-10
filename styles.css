@@ -600,6 +600,21 @@ h1, h2, h3 { line-height: 1.15; letter-spacing: -.02em; margin: 0; }
 }
 .stack__card .price { white-space: nowrap; }
 .price__tag { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--primary); line-height: 1.2; }
+/* preço bloqueado para visitante sem login */
+.price-lock { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--primary); padding: 6px 10px; border-radius: 999px; background: var(--primary-soft); white-space: nowrap; transition: background .2s; }
+.price-lock:hover { background: #d6e7f7; }
+.price-lock .i { width: 15px; height: 15px; }
+.stack__card .price .i { width: 18px; height: 18px; color: var(--muted); }
+.badge-price small .i { width: 12px; height: 12px; vertical-align: -1px; }
+.badge-price strong:only-of-type { font-size: 20px; }
+.lock-note { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; color: var(--muted); margin: 0; }
+.lock-note .i { color: var(--primary); flex: none; margin-top: 1px; }
+.price-locked { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: center; background: var(--surface); border-radius: 18px; padding: 18px; margin: 16px 0 12px; }
+.price-locked__ic { width: 44px; height: 44px; border-radius: 12px; background: var(--primary); color: #fff; display: grid; place-items: center; }
+.price-locked strong { display: block; font-size: 16px; }
+.price-locked > div > span { font-size: 14px; color: var(--muted); }
+.price-locked .btn { grid-column: 1 / -1; margin-top: 8px; }
+@media (max-width: 520px) { .card__foot .price-lock span { display: none; } .card__foot .price-lock { padding: 8px; } }
 .price-note { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--muted); margin: 4px 0 8px; }
 .code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 13px; font-weight: 600; background: var(--surface); padding: 3px 8px; border-radius: 6px; }
 .code-preview { font-size: 13px; color: var(--muted); margin: -6px 0 14px; }

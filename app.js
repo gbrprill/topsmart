@@ -91,6 +91,10 @@
   // Lojista logado vê o preço de lojista; os demais veem o preço de consumidor (com promoção, se houver).
   const basePrice = (p) => isLojista() ? (p.priceLoj ?? p.price) : (p.promo ?? p.price);
   const fullName = (p) => p.code ? `${p.name} - ${p.code}` : p.name;
+  // Valores só aparecem para quem está logado (cliente ou lojista). Estoque e produtos aparecem para todos.
+  const canSeePrice = () => !!session();
+  const loginHref = () => `#/login?volta=${encodeURIComponent(location.hash || "#/")}`;
+  const lockHTML = (label = "Entrar para ver o preço") => `<a class="price-lock" href="${loginHref()}">${icon("i-lock")}<span>${label}</span></a>`;
   const media = (p) => p.image ? `<img src="${p.image}" alt="${esc(p.name)}" loading="lazy">` : icon(catBy(p.cat).icon);
 
   // ---------- contas ----------
@@ -163,12 +167,16 @@
             <span>${l.qty}</span>
             <button data-qty="${esc(k)}" data-d="1" aria-label="Aumentar">${icon("i-plus")}</button>
           </div>
-          <strong>${money(l.sub)}</strong>
+          <strong>${canSeePrice() ? money(l.sub) : ""}</strong>
           <button class="citem__remove" data-remove="${esc(k)}" aria-label="Remover">${icon("i-trash")}</button>
         </div>
       </div>
     </div>`;
   }
+
+  const lockedCartHTML = () => `
+      <p class="lock-note">${icon("i-lock")}Entre ou crie sua conta para ver os valores e enviar o pedido.</p>
+      <a class="btn btn--primary btn--block" href="${loginHref()}">Entrar ou cadastrar</a>`;
 
   function syncCartUI() {
     const count = cartCount(), total = cartTotal();
@@ -179,15 +187,16 @@
     $("#cartbar").hidden = !count || hideBar;
     $("#cartbar-count").textContent = count;
     $("#cartbar-total").textContent = money(total);
+    $("#cartbar-total").hidden = !canSeePrice();
 
     const lines = cartLines();
     $("#drawer-body").innerHTML = lines.length
       ? lines.map(cartItemHTML).join("")
       : `<div class="empty" style="margin-top:24px">Seu carrinho está vazio.<br><a class="link-arrow" href="#/catalogo" style="margin-top:12px">Ver catálogo ${icon("i-arrow")}</a></div>`;
-    $("#drawer-foot").innerHTML = lines.length ? `
+    $("#drawer-foot").innerHTML = !lines.length ? "" : canSeePrice() ? `
       <div class="total-line"><span>Total</span><strong>${money(total)}</strong></div>
       <button class="btn btn--wa btn--block" data-send>${icon("i-wa")}Enviar pedido pelo WhatsApp</button>
-      <a class="btn btn--ghost btn--block" href="#/carrinho">Ver carrinho completo</a>` : "";
+      <a class="btn btn--ghost btn--block" href="#/carrinho">Ver carrinho completo</a>` : lockedCartHTML();
 
     if (route === "#/carrinho") renderCart();
   }
@@ -218,6 +227,7 @@
   function startCheckout() {
     if (!cart.length) return;
     closeDrawer();
+    if (!canSeePrice()) { toast("Entre na sua conta para enviar o pedido"); location.hash = loginHref(); return; }
     const modal = $("#checkout-modal"), form = $("#checkout-form");
     const s = session();
     form.reset();
@@ -260,6 +270,7 @@
     return "";
   }
   const priceHTML = (p) => {
+    if (!canSeePrice()) return lockHTML("Ver preço");
     if (isLojista()) return `<span class="price"><small class="price__tag">Lojista</small>${money(basePrice(p))}</span>`;
     return p.promo ? `<span class="price"><s>${money(p.price)}</s>${money(p.promo)}</span>` : `<span class="price">${money(p.price)}</span>`;
   };
@@ -332,6 +343,13 @@
   // ---------- views ----------
   const perk = (ic, t, d) => `<div class="perk"><span class="perk__ic">${icon(ic)}</span><div><strong>${t}</strong><span>${d}</span></div></div>`;
 
+  // card do banner de lojista: usa o produto real, se existir, para mostrar o preço de quem está logado
+  function heroCard(ic, label, name) {
+    const p = products.find((x) => x.name === name);
+    const price = !canSeePrice() ? `<span class="price">${icon("i-lock")}</span>` : p ? `<span class="price">${money(basePrice(p))}</span>` : "";
+    return `<div class="stack__card"><span class="row__thumb">${icon(ic)}</span><div><small>${label}</small><strong>${esc(name)}</strong></div>${price}</div>`;
+  }
+
   function viewHome() {
     const featured = products.filter((p) => p.featured).slice(0, 8);
     const news = [...products].filter((p) => p.isNew).slice(0, 4);
@@ -370,9 +388,9 @@
                 </div>
                 <div class="slide__visual" aria-hidden="true">
                   <div class="stack">
-                    <div class="stack__card"><span class="row__thumb">${icon("c-telas")}</span><div><small>Telas</small><strong>Tela iPhone 11 Incell</strong></div><span class="price">${money(189)}</span></div>
-                    <div class="stack__card"><span class="row__thumb">${icon("c-baterias")}</span><div><small>Baterias</small><strong>Bateria Galaxy A14</strong></div><span class="price">${money(89)}</span></div>
-                    <div class="stack__card"><span class="row__thumb">${icon("c-pecas")}</span><div><small>Componentes</small><strong>Conector de carga</strong></div><span class="price">${money(35)}</span></div>
+                    ${heroCard("c-telas", "Telas", "Tela iPhone 11")}
+                    ${heroCard("c-baterias", "Baterias", "Bateria Galaxy A14")}
+                    ${heroCard("c-pecas", "Componentes", "Conector de carga Galaxy A14")}
                   </div>
                 </div>
               </article>
@@ -387,7 +405,7 @@
                 </div>
                 <div class="slide__visual" aria-hidden="true">
                   <div class="screens"><div class="screen"></div><div class="screen"></div><div class="screen"></div>
-                    <div class="badge-price"><small>a partir de</small><strong>${money(minTela)}</strong></div>
+                    <div class="badge-price">${canSeePrice() ? `<small>a partir de</small><strong>${money(minTela)}</strong>` : `<small>${icon("i-lock")} preços para</small><strong>clientes cadastrados</strong>`}</div>
                   </div>
                 </div>
               </article>
@@ -524,6 +542,8 @@
       stock: params.get("stock") === "1",
       sort: params.get("sort") || "relevance",
     };
+    // sem login, preço não entra em filtro nem ordenação (não dá para descobrir valores pela URL)
+    if (!canSeePrice()) { f.min = f.max = ""; if (f.sort === "low" || f.sort === "high") f.sort = "relevance"; }
     const norm = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
     let list = products.filter((p) =>
       (!f.cat || p.cat === f.cat) &&
@@ -569,9 +589,9 @@
         <aside class="filters" id="filters" aria-label="Filtros">
           ${forcedCat ? "" : `<div><h3>Categoria</h3><select data-filter="cat"><option value="">Todas</option>${categories.map((c) => `<option value="${c.slug}" ${f.cat === c.slug ? "selected" : ""}>${c.name}</option>`).join("")}</select></div>`}
           <div><h3>Modelo do aparelho</h3><select data-filter="model"><option value="">Todos</option>${models.map((m) => `<option ${f.model === m ? "selected" : ""}>${m}</option>`).join("")}</select></div>
-          <div><h3>Preço (R$)</h3><div class="price-range">
+          ${canSeePrice() ? `<div><h3>Preço (R$)</h3><div class="price-range">
             <input type="number" min="0" placeholder="Mín." value="${esc(f.min)}" data-filter="min" aria-label="Preço mínimo">
-            <input type="number" min="0" placeholder="Máx." value="${esc(f.max)}" data-filter="max" aria-label="Preço máximo"></div></div>
+            <input type="number" min="0" placeholder="Máx." value="${esc(f.max)}" data-filter="max" aria-label="Preço máximo"></div></div>` : ""}
           <label class="check"><input type="checkbox" data-filter="stock" ${f.stock ? "checked" : ""}> Só com estoque</label>
           <button class="text-btn" data-clear style="align-self:flex-start">Limpar filtros</button>
         </aside>
@@ -580,8 +600,8 @@
             <button class="btn btn--ghost filters__mobile" style="height:38px;padding:0 14px;font-size:14px" data-toggle-filters>Filtros</button>
             <select data-filter="sort" aria-label="Ordenar">
               <option value="relevance" ${f.sort === "relevance" ? "selected" : ""}>Relevância</option>
-              <option value="low" ${f.sort === "low" ? "selected" : ""}>Menor preço</option>
-              <option value="high" ${f.sort === "high" ? "selected" : ""}>Maior preço</option>
+              ${canSeePrice() ? `<option value="low" ${f.sort === "low" ? "selected" : ""}>Menor preço</option>
+              <option value="high" ${f.sort === "high" ? "selected" : ""}>Maior preço</option>` : ""}
               <option value="new" ${f.sort === "new" ? "selected" : ""}>Mais novos</option>
             </select>
             <div class="view-toggle" role="group" aria-label="Modo de visualização">
@@ -610,15 +630,19 @@
           <span class="card__cat">${c.name}${p.brand ? " · " + esc(p.brand) : ""}</span>
           <h1>${esc(fullName(p))}</h1>
           ${stockHTML(p)}
-          <div class="product__price" id="pd-price">${money(basePrice(p))}</div>
+          ${!canSeePrice() ? `<div class="price-locked">
+              <span class="price-locked__ic">${icon("i-lock")}</span>
+              <div><strong>Preço disponível para clientes cadastrados</strong><span>Entre ou crie sua conta grátis, como cliente ou lojista.</span></div>
+              <a class="btn btn--dark" href="${loginHref()}">Entrar ou cadastrar</a>
+            </div>`
+          : `<div class="product__price" id="pd-price">${money(basePrice(p))}</div>
           ${isLojista()
             ? `<div class="price-note"><span class="tag tag--pro">Preço lojista</span> Consumidor: ${money(p.promo ?? p.price)}</div>`
-            : `${p.promo ? `<div class="muted"><s>${money(p.price)}</s> preço normal</div>` : ""}
-               ${session() ? "" : `<a class="price-note link-arrow" href="#/login?tipo=lojista">É lojista? Entre para ver o preço de lojista ${icon("i-arrow")}</a>`}`}
+            : p.promo ? `<div class="muted"><s>${money(p.price)}</s> preço normal</div>` : ""}`}
           <div class="product__sku">Código ${esc(p.code)}</div>
           ${p.variants ? `<div class="opt-label">${p.cat === "telas" ? "Qualidade" : "Opção"}</div>
             <div class="variants" role="radiogroup">${p.variants.map(([n, d], i) => `
-              <button class="variant ${i === 0 ? "is-active" : ""}" role="radio" aria-checked="${i === 0}" data-variant="${esc(n)}">${esc(n)}<small>${money(basePrice(p) + d)}</small></button>`).join("")}</div>` : ""}
+              <button class="variant ${i === 0 ? "is-active" : ""}" role="radio" aria-checked="${i === 0}" data-variant="${esc(n)}">${esc(n)}${canSeePrice() ? `<small>${money(basePrice(p) + d)}</small>` : ""}</button>`).join("")}</div>` : ""}
           <div class="buy">
             <div class="qty" aria-label="Quantidade">
               <button data-pdq="-1" aria-label="Diminuir">${icon("i-minus")}</button><span id="pd-qty">1</span><button data-pdq="1" aria-label="Aumentar">${icon("i-plus")}</button>
@@ -642,10 +666,10 @@
         <div class="cart-list">${lines.map(cartItemHTML).join("")}</div>
         <aside class="summary">
           <h2>Resumo</h2>
-          ${lines.map((l) => `<div class="total-line" style="font-size:14px"><span>${l.qty}x ${esc(fullName(l.p))}</span><span>${money(l.sub)}</span></div>`).join("")}
+          ${lines.map((l) => `<div class="total-line" style="font-size:14px"><span>${l.qty}x ${esc(fullName(l.p))}</span><span>${canSeePrice() ? money(l.sub) : ""}</span></div>`).join("")}
           <hr style="border:0;border-top:1px solid var(--border);width:100%">
-          <div class="total-line"><span>Total</span><strong>${money(cartTotal())}</strong></div>
-          <button class="btn btn--wa btn--block" data-send>${icon("i-wa")}Enviar pedido pelo WhatsApp</button>
+          ${canSeePrice() ? `<div class="total-line"><span>Total</span><strong>${money(cartTotal())}</strong></div>
+          <button class="btn btn--wa btn--block" data-send>${icon("i-wa")}Enviar pedido pelo WhatsApp</button>` : lockedCartHTML()}
           <p class="note">Sem pagamento online. A loja confirma disponibilidade e forma de pagamento pelo WhatsApp.</p>
           <button class="text-btn" data-clear-cart>Limpar carrinho</button>
         </aside>
@@ -938,6 +962,12 @@
     location.hash = `${base}${params.toString() ? "?" + params : ""}`;
   }
 
+  // volta para a página de onde a pessoa veio (ex.: o produto que queria ver o preço)
+  function returnTo() {
+    const v = new URLSearchParams(location.hash.split("?")[1] || "").get("volta");
+    return v && v.startsWith("#/") && !v.startsWith("#/login") ? v : "#/catalogo";
+  }
+
   // ---------- validação de formulários ----------
   function setErr(form, name, msg) {
     const inp = form.querySelector(`[name=${name}]`);
@@ -981,7 +1011,7 @@
     else if (d.variant) {
       t.parentElement.querySelectorAll(".variant").forEach((b) => { b.classList.toggle("is-active", b === t); b.setAttribute("aria-checked", b === t); });
       const p = products.find((x) => x.slug === location.hash.split("/")[2]);
-      $("#pd-price").textContent = money(itemPrice(p, d.variant));
+      if ($("#pd-price")) $("#pd-price").textContent = money(itemPrice(p, d.variant));
     }
     else if (d.pdq) { const q = $("#pd-qty"); q.textContent = Math.max(1, +q.textContent + +d.pdq); }
     else if (d.pdAdd) {
@@ -1082,7 +1112,7 @@
       const u = users().find((x) => x.email.toLowerCase() === email && x.password === form.password.value);
       if (!u) return setErr(form, "password", "E-mail ou senha incorretos");
       login(u);
-      location.hash = u.role === "ADMIN" ? "#/admin" : "#/catalogo";
+      location.hash = u.role === "ADMIN" ? "#/admin" : returnTo();
       return;
     }
     if (form.id === "signup-form") {
@@ -1114,7 +1144,7 @@
       store.set("ts_users", [...store.get("ts_users", []), u]);
       login(u);
       toast(tipo === "lojista" ? "Loja cadastrada!" : "Conta criada!");
-      location.hash = "#/catalogo";
+      location.hash = returnTo();
       return;
     }
     if (form.id === "product-form") {
