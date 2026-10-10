@@ -30,6 +30,7 @@
       const d = digits(v).slice(0, 11);
       return d.replace(/(\d{3})(\d)/, "$1.$2").replace(/(\d{3})(\d)/, "$1.$2").replace(/(\d{3})(\d{1,2})$/, "$1-$2");
     },
+    code: (v) => v.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 20),
     cnpj(v) {
       const d = digits(v).slice(0, 14);
       return d.replace(/^(\d{2})(\d)/, "$1.$2").replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2.$3").replace(/\.(\d{3})(\d)/, ".$1/$2").replace(/(\d{4})(\d)/, "$1-$2");
@@ -76,10 +77,20 @@
   } else {
     products = store.get("ts_products", []);
   }
+  // Todo produto tem código e dois preços: consumidor (price) e lojista (priceLoj).
+  const CODE_PREFIX = { telas: "TL", peliculas: "PL", capinhas: "CP", baterias: "BT", carregadores: "CR", acessorios: "AC", pecas: "PC" };
+  products.forEach((p, i) => {
+    p.code ||= (CODE_PREFIX[p.cat] || "TS") + (digits(p.sku) || 3000 + i);
+    p.priceLoj ??= Math.round(p.price * 0.8 * 10) / 10;
+  });
   const saveProducts = () => store.set("ts_products", products);
+  saveProducts();
   const catBy = (slug) => categories.find((c) => c.slug === slug) || categories[categories.length - 1];
   const prodBy = (id) => products.find((p) => p.id === id);
-  const basePrice = (p) => p.promo ?? p.price;
+  const isLojista = () => session()?.type === "lojista";
+  // Lojista logado vê o preço de lojista; os demais veem o preço de consumidor (com promoção, se houver).
+  const basePrice = (p) => isLojista() ? (p.priceLoj ?? p.price) : (p.promo ?? p.price);
+  const fullName = (p) => p.code ? `${p.name} - ${p.code}` : p.name;
   const media = (p) => p.image ? `<img src="${p.image}" alt="${esc(p.name)}" loading="lazy">` : icon(catBy(p.cat).icon);
 
   // ---------- contas ----------
@@ -128,7 +139,7 @@
     saveCart();
     const badge = $("#cart-count");
     badge.classList.remove("bump"); void badge.offsetWidth; badge.classList.add("bump");
-    toast(`${p.name}${variant ? " – " + variant : ""} adicionado`);
+    toast(`${fullName(p)}${variant ? " – " + variant : ""} adicionado`);
   }
   function setQty(key, qty) {
     const line = cart.find((l) => lineKey(l.id, l.variant) === key);
@@ -144,7 +155,7 @@
     return `<div class="citem">
       <div class="row__thumb">${media(l.p)}</div>
       <div>
-        <div class="citem__name">${esc(l.p.name)}</div>
+        <div class="citem__name">${esc(fullName(l.p))}</div>
         ${l.variant ? `<div class="citem__var">${esc(l.variant)}</div>` : ""}
         <div class="citem__line">
           <div class="qty qty--sm">
@@ -199,7 +210,7 @@
       `${i + 1}) ${it.name}${it.variant ? " – " + it.variant : ""}\n   ${it.qty} x ${money(it.unit)} = ${money(it.sub)}`).join("\n");
     const c = order.customer;
     const who = c.type === "lojista"
-      ? `Lojista: ${c.razao}\nCNPJ: ${c.cnpj}\nContato: ${c.name}`
+      ? `Lojista: ${c.razao}\nCNPJ: ${c.cnpj}\nContato: ${c.name}\nTabela de preço: lojista`
       : `Cliente: ${c.name}${c.cpf ? `\nCPF: ${c.cpf}` : ""}`;
     return `Olá, Top Smart! Quero fazer este pedido:\n\nPedido: ${order.code}\n${who}\nTelefone: ${c.phone}\n\n${items}\n\nTotal: ${money(order.total)}` +
       (c.note ? `\n\nObservação: ${c.note}` : "");
@@ -231,7 +242,7 @@
         name: f.name.value.trim(), phone: f.phone.value.trim(), note: f.note.value.trim(),
         cpf: s?.cpf, cnpj: s?.cnpj, razao: s?.razao,
       },
-      items: lines.map((l) => ({ name: l.p.name, variant: l.variant, qty: l.qty, unit: l.unit, sub: l.sub })),
+      items: lines.map((l) => ({ name: fullName(l.p), variant: l.variant, qty: l.qty, unit: l.unit, sub: l.sub })),
       total: cartTotal(),
     };
     orders.unshift(order);
@@ -243,23 +254,27 @@
   // ---------- componentes ----------
   function tags(p) {
     if (p.stock <= 0) return `<span class="card__tag">Esgotado</span>`;
+    if (isLojista()) return `<span class="card__tag card__tag--promo">Preço lojista</span>`;
     if (p.promo) return `<span class="card__tag card__tag--promo">Oferta</span>`;
     if (p.isNew) return `<span class="card__tag">Novo</span>`;
     return "";
   }
-  const priceHTML = (p) => p.promo ? `<span class="price"><s>${money(p.price)}</s>${money(p.promo)}</span>` : `<span class="price">${money(p.price)}</span>`;
+  const priceHTML = (p) => {
+    if (isLojista()) return `<span class="price"><small class="price__tag">Lojista</small>${money(basePrice(p))}</span>`;
+    return p.promo ? `<span class="price"><s>${money(p.price)}</s>${money(p.promo)}</span>` : `<span class="price">${money(p.price)}</span>`;
+  };
   function stockHTML(p) {
     if (p.stock <= 0) return `<span class="stock stock--out">Esgotado</span>`;
     if (p.stock <= 3) return `<span class="stock stock--low">Últimas ${p.stock}</span>`;
     return `<span class="stock">${p.stock} em estoque</span>`;
   }
-  const addBtn = (p) => `<button class="add-btn" data-add="${p.id}" ${p.stock <= 0 ? "disabled" : ""} aria-label="Adicionar ${esc(p.name)} ao carrinho">${icon("i-plus")}</button>`;
+  const addBtn = (p) => `<button class="add-btn" data-add="${p.id}" ${p.stock <= 0 ? "disabled" : ""} aria-label="Adicionar ${esc(fullName(p))} ao carrinho">${icon("i-plus")}</button>`;
 
   const card = (p) => `<article class="card">
     <a href="#/produto/${p.slug}" class="card__media">${media(p)}${tags(p)}</a>
     <div class="card__body">
       <span class="card__cat">${esc(catBy(p.cat).name)}${p.brand ? " · " + esc(p.brand) : ""}</span>
-      <a href="#/produto/${p.slug}" class="card__name">${esc(p.name)}</a>
+      <a href="#/produto/${p.slug}" class="card__name">${esc(fullName(p))}</a>
       <div class="card__foot">${priceHTML(p)}${addBtn(p)}</div>
     </div>
   </article>`;
@@ -267,7 +282,7 @@
   const row = (p) => `<div class="row">
     <a href="#/produto/${p.slug}" class="row__thumb">${media(p)}</a>
     <div>
-      <a href="#/produto/${p.slug}" class="row__name">${esc(p.name)}</a>
+      <a href="#/produto/${p.slug}" class="row__name">${esc(fullName(p))}</a>
       <div class="row__meta"><span>${esc(catBy(p.cat).name)}</span>${stockHTML(p)}${p.variants ? `<span>${p.variants.length} opções</span>` : ""}</div>
     </div>
     <div class="row__right">${priceHTML(p)}${addBtn(p)}</div>
@@ -514,7 +529,7 @@
       (!f.cat || p.cat === f.cat) &&
       (!f.brand || p.brand === f.brand) &&
       (!f.model || p.models.includes(f.model)) &&
-      (!f.q || norm(`${p.name} ${p.brand} ${p.models.join(" ")} ${catBy(p.cat).name}`).includes(norm(f.q))) &&
+      (!f.q || norm(`${p.name} ${p.code} ${p.brand} ${p.models.join(" ")} ${catBy(p.cat).name}`).includes(norm(f.q))) &&
       (!f.min || basePrice(p) >= +f.min) &&
       (!f.max || basePrice(p) <= +f.max) &&
       (!f.stock || p.stock > 0));
@@ -586,18 +601,21 @@
     const c = catBy(p.cat);
     const related = products.filter((x) => x.id !== p.id && (x.cat === p.cat || x.brand === p.brand)).slice(0, 4);
     return `<div class="view container">
-      <nav class="crumbs" aria-label="Você está em"><a href="#/">Início</a>/<a href="#/categoria/${c.slug}">${c.name}</a>/<span>${esc(p.name)}</span></nav>
+      <nav class="crumbs" aria-label="Você está em"><a href="#/">Início</a>/<a href="#/categoria/${c.slug}">${c.name}</a>/<span>${esc(fullName(p))}</span></nav>
       <div class="product">
         <div class="gallery">
           <div class="gallery__main">${media(p)}</div>
         </div>
         <div class="product__info">
           <span class="card__cat">${c.name}${p.brand ? " · " + esc(p.brand) : ""}</span>
-          <h1>${esc(p.name)}</h1>
+          <h1>${esc(fullName(p))}</h1>
           ${stockHTML(p)}
           <div class="product__price" id="pd-price">${money(basePrice(p))}</div>
-          ${p.promo ? `<div class="muted"><s>${money(p.price)}</s> preço normal</div>` : ""}
-          <div class="product__sku">SKU ${esc(p.sku)}</div>
+          ${isLojista()
+            ? `<div class="price-note"><span class="tag tag--pro">Preço lojista</span> Consumidor: ${money(p.promo ?? p.price)}</div>`
+            : `${p.promo ? `<div class="muted"><s>${money(p.price)}</s> preço normal</div>` : ""}
+               ${session() ? "" : `<a class="price-note link-arrow" href="#/login?tipo=lojista">É lojista? Entre para ver o preço de lojista ${icon("i-arrow")}</a>`}`}
+          <div class="product__sku">Código ${esc(p.code)}</div>
           ${p.variants ? `<div class="opt-label">${p.cat === "telas" ? "Qualidade" : "Opção"}</div>
             <div class="variants" role="radiogroup">${p.variants.map(([n, d], i) => `
               <button class="variant ${i === 0 ? "is-active" : ""}" role="radio" aria-checked="${i === 0}" data-variant="${esc(n)}">${esc(n)}<small>${money(basePrice(p) + d)}</small></button>`).join("")}</div>` : ""}
@@ -624,7 +642,7 @@
         <div class="cart-list">${lines.map(cartItemHTML).join("")}</div>
         <aside class="summary">
           <h2>Resumo</h2>
-          ${lines.map((l) => `<div class="total-line" style="font-size:14px"><span>${l.qty}x ${esc(l.p.name)}</span><span>${money(l.sub)}</span></div>`).join("")}
+          ${lines.map((l) => `<div class="total-line" style="font-size:14px"><span>${l.qty}x ${esc(fullName(l.p))}</span><span>${money(l.sub)}</span></div>`).join("")}
           <hr style="border:0;border-top:1px solid var(--border);width:100%">
           <div class="total-line"><span>Total</span><strong>${money(cartTotal())}</strong></div>
           <button class="btn btn--wa btn--block" data-send>${icon("i-wa")}Enviar pedido pelo WhatsApp</button>
@@ -764,9 +782,12 @@
         </label>
         <div>
           <div class="form-grid">
-            ${fld("name", "Nome do produto", `required value="${esc(p?.name || "")}" placeholder="Ex.: Tela iPhone 12 OLED"`, "full")}
-            <label class="field">Quantidade em estoque<input name="stock" type="number" min="0" step="1" inputmode="numeric" required value="${p ? p.stock : ""}"><span class="err"></span></label>
-            <label class="field">Preço de venda<span class="money-input"><span>R$</span><input name="price" inputmode="decimal" required placeholder="0,00" value="${p ? String(p.price.toFixed(2)).replace(".", ",") : ""}"></span><span class="err"></span></label>
+            ${fld("name", "Nome do produto", `required value="${esc(p?.name || "")}" placeholder="Ex.: Tela iPhone 12 OLED"`)}
+            ${fld("code", "Código do produto", `required data-mask="code" value="${esc(p?.code || "")}" placeholder="Ex.: FB1265X" autocapitalize="characters"`)}
+            <p class="code-preview full" id="code-preview">${p ? `Aparece no site como: <strong>${esc(fullName(p))}</strong>` : "Aparece no site como: <strong>Nome - CÓDIGO</strong>"}</p>
+            <label class="field"><span>Preço consumidor</span><span class="money-input"><span>R$</span><input name="price" inputmode="decimal" required placeholder="0,00" value="${p ? p.price.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
+            <label class="field"><span>Preço lojista</span><span class="money-input"><span>R$</span><input name="priceLoj" inputmode="decimal" required placeholder="0,00" value="${p ? p.priceLoj.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
+            <label class="field"><span>Quantidade em estoque</span><input name="stock" type="number" min="0" step="1" inputmode="numeric" required value="${p ? p.stock : ""}"><span class="err"></span></label>
             <label class="field"><span>Categoria</span><select name="cat">${categories.map((c) => `<option value="${c.slug}" ${(p?.cat || "telas") === c.slug ? "selected" : ""}>${c.name}</option>`).join("")}</select></label>
             <label class="field"><span>Marca do aparelho</span><select name="brand"><option value="">Nenhuma / universal</option>${Object.keys(brands).map((b) => `<option ${p?.brand === b ? "selected" : ""}>${b}</option>`).join("")}</select></label>
             <label class="field full"><span>Modelos compatíveis <span class="opt">(opcional, separados por vírgula)</span></span><input name="models" value="${esc(p?.models.join(", ") || "")}" placeholder="Ex.: iPhone 12, iPhone 12 Pro"></label>
@@ -783,11 +804,13 @@
     const list = [...products].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     return `${productForm()}
       <div class="box"><div class="box__head"><h2>Produtos (${products.length})</h2></div>
-        <div class="table-wrap"><table><thead><tr><th></th><th>Produto</th><th>Categoria</th><th>Preço</th><th>Estoque</th><th></th></tr></thead><tbody>
-          ${list.map((p) => `<tr>
+        <input type="search" class="admin-search" id="admin-search" placeholder="Buscar por nome ou código" aria-label="Buscar produto por nome ou código">
+        <div class="table-wrap"><table><thead><tr><th></th><th>Produto</th><th>Código</th><th>Consumidor</th><th>Lojista</th><th>Estoque</th><th></th></tr></thead><tbody id="admin-products">
+          ${list.map((p) => `<tr data-search="${esc(`${p.name} ${p.code}`.toLowerCase())}">
             <td><span class="thumb-sm">${p.image ? `<img class="thumb-sm" src="${p.image}" alt="">` : icon(catBy(p.cat).icon)}</span></td>
-            <td><a href="#/produto/${p.slug}" style="font-weight:600">${esc(p.name)}</a><br><small class="muted">${esc(p.brand || "Universal")}</small></td>
-            <td>${catBy(p.cat).name}</td><td>${money(basePrice(p))}</td><td>${stockHTML(p)}</td>
+            <td><a href="#/produto/${p.slug}" style="font-weight:600">${esc(p.name)}</a><br><small class="muted">${catBy(p.cat).name} · ${esc(p.brand || "Universal")}</small></td>
+            <td><code class="code">${esc(p.code)}</code></td>
+            <td>${money(p.promo ?? p.price)}</td><td>${money(p.priceLoj)}</td><td>${stockHTML(p)}</td>
             <td><div class="tbl-actions"><button data-edit="${p.id}" aria-label="Editar ${esc(p.name)}">${icon("i-edit")}</button><button class="danger" data-del="${p.id}" aria-label="Excluir ${esc(p.name)}">${icon("i-trash")}</button></div></td>
           </tr>`).join("")}
         </tbody></table></div>
@@ -902,7 +925,7 @@
     $("#search-input").value = sp.get("q") || "";
     renderHeader();
     syncCartUI();
-    const titles = { catalogo: "Catálogo", categoria: categories.find((c) => c.slug === parts[1])?.name, produto: products.find((p) => p.slug === parts[1])?.name, carrinho: "Carrinho", login: "Entrar ou cadastrar", cadastro: "Entrar ou cadastrar", conta: "Minha conta", admin: "Painel" };
+    const titles = { catalogo: "Catálogo", categoria: categories.find((c) => c.slug === parts[1])?.name, produto: (() => { const p = products.find((x) => x.slug === parts[1]); return p && fullName(p); })(), carrinho: "Carrinho", login: "Entrar ou cadastrar", cadastro: "Entrar ou cadastrar", conta: "Minha conta", admin: "Painel" };
     document.title = titles[parts[0]] ? `${titles[parts[0]]} | Top Smart` : "Top Smart | Peças e Componentes";
   }
 
@@ -983,7 +1006,7 @@
     else if ("cancelEdit" in d) { editingId = null; pendingImage = null; router(); }
     else if (d.del) {
       const p = prodBy(d.del);
-      if (p && confirm(`Excluir "${p.name}"? Essa ação não pode ser desfeita.`)) {
+      if (p && confirm(`Excluir "${fullName(p)}"? Essa ação não pode ser desfeita.`)) {
         products = products.filter((x) => x.id !== d.del);
         cart = cart.filter((l) => l.id !== d.del);
         saveProducts(); saveCart();
@@ -1012,8 +1035,18 @@
   });
 
   document.addEventListener("input", (e) => {
-    const m = e.target.dataset.mask || (e.target.name === "phone" ? "phone" : null);
-    if (m) e.target.value = masks[m](e.target.value);
+    const t = e.target;
+    const m = t.dataset.mask || (t.name === "phone" ? "phone" : null);
+    if (m) t.value = masks[m](t.value);
+    if (t.form?.id === "product-form" && (t.name === "name" || t.name === "code")) {
+      const f = t.form;
+      const preview = fullName({ name: f.name.value.trim() || "Nome", code: f.code.value.trim() || "CÓDIGO" });
+      $("#code-preview").innerHTML = `Aparece no site como: <strong>${esc(preview)}</strong>`;
+    }
+    if (t.id === "admin-search") {
+      const q = t.value.trim().toLowerCase();
+      document.querySelectorAll("#admin-products tr").forEach((tr) => (tr.hidden = !!q && !tr.dataset.search.includes(q)));
+    }
   });
 
   // arrastar foto para o cadastro de produto
@@ -1086,18 +1119,25 @@
     }
     if (form.id === "product-form") {
       e.preventDefault();
-      const priceVal = () => parseFloat(form.price.value.replace(/\./g, "").replace(",", "."));
+      const parseMoney = (v) => parseFloat(v.replace(/\./g, "").replace(",", "."));
+      const moneyRule = (v) => !v ? "Campo obrigatório" : parseMoney(v) > 0 ? "" : "Preço inválido";
+      const existing = editingId ? prodBy(editingId) : null;
       const ok = validate(form, {
         name: req(),
+        code: (v) => !v ? "Campo obrigatório"
+          : products.some((p) => p.code === v.toUpperCase() && p !== existing) ? "Código já usado em outro produto" : "",
+        price: moneyRule,
+        priceLoj: moneyRule,
         stock: (v) => v === "" ? "Campo obrigatório" : Number.isInteger(+v) && +v >= 0 ? "" : "Use um número inteiro",
-        price: (v) => !v ? "Campo obrigatório" : priceVal() > 0 ? "" : "Preço inválido",
       });
-      const existing = editingId ? prodBy(editingId) : null;
       if (!pendingImage && !existing?.image) { toast("Adicione uma foto do produto"); return; }
       if (!ok) return;
       const name = form.name.value.trim();
       const fields = {
-        name, stock: parseInt(form.stock.value, 10), price: Math.round(priceVal() * 100) / 100,
+        name, code: form.code.value.trim().toUpperCase(),
+        stock: parseInt(form.stock.value, 10),
+        price: Math.round(parseMoney(form.price.value) * 100) / 100,
+        priceLoj: Math.round(parseMoney(form.priceLoj.value) * 100) / 100,
         cat: form.cat.value, brand: form.brand.value,
         models: form.models.value.split(",").map((m) => m.trim()).filter(Boolean),
         image: pendingImage || existing?.image,
@@ -1105,9 +1145,10 @@
       if (existing) {
         Object.assign(existing, fields, { promo: existing.promo && existing.promo < fields.price ? existing.promo : null });
       } else {
-        let slug = slugify(name) || "produto", n = 2;
-        while (products.some((p) => p.slug === slug)) slug = `${slugify(name)}-${n++}`;
-        products.unshift({ id: slug, slug, ...fields, promo: null, featured: false, isNew: true, variants: null, sku: "TS-" + (2000 + products.length), createdAt: Date.now() });
+        const base = slugify(`${name} ${fields.code}`) || "produto";
+        let slug = base, n = 2;
+        while (products.some((p) => p.slug === slug)) slug = `${base}-${n++}`;
+        products.unshift({ id: slug, slug, ...fields, promo: null, featured: false, isNew: true, variants: null, createdAt: Date.now() });
       }
       if (!saveProducts()) { toast("Sem espaço no navegador para salvar a foto. Use uma imagem menor."); return; }
       toast(existing ? "Produto atualizado" : "Produto cadastrado");
