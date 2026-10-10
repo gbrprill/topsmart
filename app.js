@@ -30,6 +30,7 @@
       const d = digits(v).slice(0, 11);
       return d.replace(/(\d{3})(\d)/, "$1.$2").replace(/(\d{3})(\d)/, "$1.$2").replace(/(\d{3})(\d{1,2})$/, "$1-$2");
     },
+    cep: (v) => digits(v).slice(0, 8).replace(/^(\d{5})(\d)/, "$1-$2"),
     code: (v) => v.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 20),
     cnpj(v) {
       const d = digits(v).slice(0, 14);
@@ -195,7 +196,7 @@
       : `<div class="empty" style="margin-top:24px">Seu carrinho está vazio.<br><a class="link-arrow" href="#/catalogo" style="margin-top:12px">Ver catálogo ${icon("i-arrow")}</a></div>`;
     $("#drawer-foot").innerHTML = !lines.length ? "" : canSeePrice() ? `
       <div class="total-line"><span>Total</span><strong>${money(total)}</strong></div>
-      <button class="btn btn--wa btn--block" data-send>${icon("i-wa")}Enviar pedido pelo WhatsApp</button>
+      <button class="btn btn--wa btn--block" data-send>${icon("i-check")}Fechar pedido</button>
       <a class="btn btn--ghost btn--block" href="#/carrinho">Ver carrinho completo</a>` : lockedCartHTML();
 
     if (route === "#/carrinho") renderCart();
@@ -213,52 +214,183 @@
     setTimeout(() => ($("#overlay").hidden = true), 300);
   }
 
-  // ---------- pedido / WhatsApp ----------
-  function buildMessage(order) {
-    const items = order.items.map((it, i) =>
-      `${i + 1}) ${it.name}${it.variant ? " – " + it.variant : ""}\n   ${it.qty} x ${money(it.unit)} = ${money(it.sub)}`).join("\n");
-    const c = order.customer;
-    const who = c.type === "lojista"
-      ? `Lojista: ${c.razao}\nCNPJ: ${c.cnpj}\nContato: ${c.name}\nTabela de preço: lojista`
-      : `Cliente: ${c.name}${c.cpf ? `\nCPF: ${c.cpf}` : ""}`;
-    return `Olá, Top Smart! Quero fazer este pedido:\n\nPedido: ${order.code}\n${who}\nTelefone: ${c.phone}\n\n${items}\n\nTotal: ${money(order.total)}` +
-      (c.note ? `\n\nObservação: ${c.note}` : "");
+  // ---------- pedidos: API (Vercel + Redis) com modo local para testes em file:// ----------
+  const REMOTE = location.protocol.startsWith("http");
+  const ordersApi = {
+    async req(method, query = "", body, admin = false) {
+      const headers = { "Content-Type": "application/json" };
+      if (admin) headers["x-admin-key"] = store.get("ts_admin_key", "");
+      const r = await fetch(`/api/orders${query}`, { method, headers, body: body ? JSON.stringify(body) : undefined, keepalive: method === "PATCH" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw Object.assign(new Error(data.error || "Falha na comunicação com a loja"), { status: r.status });
+      return data;
+    },
+    async create(payload) {
+      if (REMOTE) return this.req("POST", "", payload);
+      // modo local (arquivo aberto direto no navegador): simula o servidor
+      const all = store.get("ts_orders", []);
+      const seq = store.get("ts_order_seq", 0) + 1;
+      store.set("ts_order_seq", seq);
+      const order = {
+        ...payload, code: `TS-${String(seq).padStart(6, "0")}`, seq, createdAt: new Date().toISOString(),
+        status: "NEW", stage: "PENDING", checkout: null, token: crypto.randomUUID(),
+        subtotal: payload.items.reduce((s, it) => s + it.unit * it.qty, 0),
+      };
+      order.items = order.items.map((it) => ({ ...it, sub: it.unit * it.qty }));
+      store.set("ts_orders", [order, ...all]);
+      const { token, ...pub } = order;
+      return { order: pub, token };
+    },
+    async confirm(code, body) {
+      if (REMOTE) return this.req("PATCH", `?code=${encodeURIComponent(code)}`, body);
+      const all = store.get("ts_orders", []);
+      const o = all.find((x) => x.code === code);
+      Object.assign(o, { checkout: { name: body.name, phone: body.phone, note: body.note, delivery: body.delivery, payment: body.payment }, stage: "CONFIRMED", confirmedAt: new Date().toISOString() });
+      store.set("ts_orders", all);
+      const { token, ...pub } = o;
+      return { order: pub };
+    },
+    async mine(list) {
+      if (!list.length) return { orders: [] };
+      if (REMOTE) return this.req("GET", `?mine=${encodeURIComponent(list.map((o) => `${o.code}:${o.token}`).join(","))}`);
+      const all = store.get("ts_orders", []);
+      return { orders: all.filter((o) => list.some((m) => m.code === o.code)).map(({ token, ...o }) => o) };
+    },
+    async adminList(since) {
+      if (REMOTE) return this.req("GET", since !== undefined ? `?since=${since}` : "", null, true);
+      return { ver: Date.now(), changed: true, orders: store.get("ts_orders", []).filter((o) => o.stage).map(({ token, ...o }) => o) };
+    },
+    async setStatus(code, status) {
+      if (REMOTE) return this.req("PUT", `?code=${encodeURIComponent(code)}`, { status }, true);
+      const all = store.get("ts_orders", []);
+      all.find((x) => x.code === code).status = status;
+      store.set("ts_orders", all);
+      return {};
+    },
+  };
+
+  // pedidos do cliente neste aparelho (código + token para consultar o status)
+  const myOrders = () => store.get("ts_my_orders", []);
+  function saveMyOrder(order, token) {
+    const list = myOrders().filter((o) => o.code !== order.code);
+    const prev = myOrders().find((o) => o.code === order.code);
+    store.set("ts_my_orders", [{ ...order, token: token || prev?.token, owner: session()?.email || null }, ...list].slice(0, 50));
   }
+
+  const PAYMENT_LABEL = { credito: "Cartão de crédito", debito: "Cartão de débito", pix: "Pix", dinheiro: "Dinheiro" };
+  const STAGE_LABEL = { PENDING: "Aguardando dados", CONFIRMED: "Confirmado pelo cliente" };
+  const fmtAddress = (a) => a ? `${a.rua}, ${a.numero}${a.complemento ? ` - ${a.complemento}` : ""}, ${a.bairro}, ${a.cidade}/${a.uf}, CEP ${a.cep}` : "";
+  const deliveryText = (o) => !o.checkout ? "—" : o.checkout.delivery === "entrega" ? `Entregar no endereço cadastrado: ${fmtAddress(o.customer.address)}` : "Retirar na loja";
+
+  // mensagem no formato pedido pelo cliente
+  function buildMessage(o) {
+    const c = o.customer, k = o.checkout || {};
+    const lojista = c.type === "lojista";
+    const items = o.items.map((it) =>
+      `*${it.qty}x* ${it.name}${it.variant ? ` (${it.variant})` : ""} - *${money(it.sub)}*`).join("\n");
+    return [
+      `*PEDIDO ${o.code}*`,
+      "",
+      "Olá Top Smart, aqui está meu pedido:",
+      "",
+      lojista ? `Razão Social: ${k.name || c.razao}` : `Cliente: ${k.name || c.name}`,
+      lojista ? `CNPJ: ${c.doc}` : `CPF: ${c.doc}`,
+      `Telefone: ${k.phone || c.phone}`,
+      "",
+      "Produtos:",
+      "",
+      items,
+      "",
+      `Subtotal: *${money(o.subtotal)}*`,
+      `Forma de pagamento: ${PAYMENT_LABEL[k.payment] || "—"}`,
+      "",
+      `Entrega: ${deliveryText(o)}`,
+      ...(k.note ? ["", `Observação: ${k.note}`] : []),
+    ].join("\n");
+  }
+  const waLink = (o) => `https://wa.me/${whatsapp}?text=${encodeURIComponent(buildMessage(o))}`;
+
+  // 1) cliente clica em "Fechar pedido": pede confirmação
   function startCheckout() {
     if (!cart.length) return;
     closeDrawer();
     if (!canSeePrice()) { toast("Entre na sua conta para enviar o pedido"); location.hash = loginHref(); return; }
-    const modal = $("#checkout-modal"), form = $("#checkout-form");
-    const s = session();
-    form.reset();
-    if (s) { form.name.value = s.type === "lojista" ? s.responsavel : s.name; form.phone.value = s.phone || ""; }
-    modal.showModal();
-  }
-  $("#checkout-modal").addEventListener("close", () => {
-    if ($("#checkout-modal").returnValue !== "ok") return;
-    const f = $("#checkout-form");
-    const s = session();
-    // Na versão final: Server Action revalida preço/estoque, gera o código e grava o snapshot no banco.
-    const orders = store.get("ts_orders", []);
-    const code = `TS-${new Date().getFullYear()}-${String(orders.length + 1).padStart(6, "0")}`;
     const lines = cartLines();
-    const order = {
-      code,
-      createdAt: new Date().toISOString(),
-      status: "NEW",
-      userEmail: s?.email || null,
+    $("#confirm-list").innerHTML = lines.map((l) => `<div class="total-line"><span>${l.qty}x ${esc(fullName(l.p))}${l.variant ? ` <small class="muted">(${esc(l.variant)})</small>` : ""}</span><span>${money(l.sub)}</span></div>`).join("")
+      + `<div class="total-line confirm-total"><span>Subtotal</span><strong>${money(cartTotal())}</strong></div>`;
+    $("#confirm-yes").disabled = false;
+    $("#confirm-yes").textContent = "Sim, fechar pedido";
+    $("#confirm-modal").showModal();
+  }
+
+  // 2) confirmou: gera o pedido (número sequencial) para o cliente e para o admin
+  let checkoutOrder = null;
+  $("#confirm-yes").addEventListener("click", async () => {
+    const btn = $("#confirm-yes");
+    btn.disabled = true; btn.textContent = "Gerando pedido…";
+    const s = session();
+    const payload = {
+      items: cartLines().map((l) => ({ name: fullName(l.p), variant: l.variant, qty: l.qty, unit: l.unit })),
       customer: {
-        type: s?.type === "lojista" ? "lojista" : "cliente",
-        name: f.name.value.trim(), phone: f.phone.value.trim(), note: f.note.value.trim(),
-        cpf: s?.cpf, cnpj: s?.cnpj, razao: s?.razao,
+        type: s.type === "lojista" ? "lojista" : "cliente",
+        name: s.type === "lojista" ? s.responsavel : s.name, razao: s.razao || "",
+        doc: s.type === "lojista" ? s.cnpj : s.cpf, phone: s.phone, email: s.email, address: s.address || null,
       },
-      items: lines.map((l) => ({ name: fullName(l.p), variant: l.variant, qty: l.qty, unit: l.unit, sub: l.sub })),
-      total: cartTotal(),
     };
-    orders.unshift(order);
-    store.set("ts_orders", orders);
-    window.open(`https://wa.me/${whatsapp}?text=${encodeURIComponent(buildMessage(order))}`, "_blank", "noopener");
-    location.hash = `#/pedido/${code}`;
+    try {
+      const { order, token } = await ordersApi.create(payload);
+      saveMyOrder(order, token);
+      cart = []; saveCart();
+      $("#confirm-modal").close();
+      toast(`Pedido ${order.code} gerado!`);
+      openCheckout(order);
+    } catch (err) {
+      btn.disabled = false; btn.textContent = "Tentar de novo";
+      toast(err.message || "Não foi possível gerar o pedido");
+    }
+  });
+
+  // 3) "Quase lá": nome/razão, telefone, observação, entrega e pagamento
+  function openCheckout(order) {
+    checkoutOrder = order;
+    const f = $("#checkout-form"), c = order.customer, k = order.checkout || {};
+    f.reset();
+    f.querySelectorAll(".err").forEach((e) => (e.textContent = ""));
+    $("#checkout-code").innerHTML = `${icon("i-check")}Pedido <strong>${esc(order.code)}</strong> gerado`;
+    $("#checkout-name-label").textContent = c.type === "lojista" ? "Razão social" : "Nome";
+    f.name.value = k.name || (c.type === "lojista" ? c.razao : c.name) || "";
+    f.phone.value = k.phone || c.phone || "";
+    f.note.value = k.note || "";
+    $("#delivery-options").innerHTML = `
+      <label class="opt-card"><input type="radio" name="delivery" value="retirada" ${k.delivery !== "entrega" ? "checked" : ""}><span>${icon("i-store")}<b>Retirar na loja</b><small>Pronta entrega no balcão</small></span></label>
+      <label class="opt-card ${c.address ? "" : "is-disabled"}"><input type="radio" name="delivery" value="entrega" ${c.address ? "" : "disabled"} ${k.delivery === "entrega" ? "checked" : ""}><span>${icon("i-truck")}<b>Entregar no endereço</b><small>${c.address ? esc(fmtAddress(c.address)) : "Sem endereço no cadastro"}</small></span></label>`;
+    if (k.payment) f.querySelector(`[name=payment][value=${k.payment}]`).checked = true;
+    $("#checkout-modal").showModal();
+  }
+
+  $("#checkout-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = e.target, o = checkoutOrder;
+    if (!o) return;
+    const ok = validate(f, { name: req(), phone: phoneRule });
+    const delivery = f.querySelector("[name=delivery]:checked")?.value;
+    const payment = f.querySelector("[name=payment]:checked")?.value;
+    $("#delivery-err").textContent = delivery ? "" : "Escolha retirada ou entrega";
+    $("#payment-err").textContent = payment ? "" : "Escolha a forma de pagamento";
+    if (!ok || !delivery || !payment) return;
+    const body = { token: myOrders().find((m) => m.code === o.code)?.token, name: f.name.value.trim(), phone: f.phone.value.trim(), note: f.note.value.trim(), delivery, payment };
+    const confirmed = { ...o, checkout: { name: body.name, phone: body.phone, note: body.note, delivery, payment }, stage: "CONFIRMED" };
+    // abre o WhatsApp na hora (dentro do clique, para o navegador não bloquear) e grava no servidor em paralelo
+    window.open(waLink(confirmed), "_blank", "noopener");
+    saveMyOrder(confirmed);
+    ordersApi.confirm(o.code, body).catch((err) => toast(`Atenção: ${err.message}. A loja ainda recebe pelo WhatsApp.`));
+    $("#checkout-modal").close();
+    location.hash = `#/pedido/${o.code}`;
+  });
+
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-close-modal]");
+    if (b) b.closest("dialog").close();
   });
 
   // ---------- componentes ----------
@@ -669,7 +801,7 @@
           ${lines.map((l) => `<div class="total-line" style="font-size:14px"><span>${l.qty}x ${esc(fullName(l.p))}</span><span>${canSeePrice() ? money(l.sub) : ""}</span></div>`).join("")}
           <hr style="border:0;border-top:1px solid var(--border);width:100%">
           ${canSeePrice() ? `<div class="total-line"><span>Total</span><strong>${money(cartTotal())}</strong></div>
-          <button class="btn btn--wa btn--block" data-send>${icon("i-wa")}Enviar pedido pelo WhatsApp</button>` : lockedCartHTML()}
+          <button class="btn btn--wa btn--block" data-send>${icon("i-check")}Fechar pedido</button>` : lockedCartHTML()}
           <p class="note">Sem pagamento online. A loja confirma disponibilidade e forma de pagamento pelo WhatsApp.</p>
           <button class="text-btn" data-clear-cart>Limpar carrinho</button>
         </aside>
@@ -677,25 +809,117 @@
     </div>`;
   }
 
+  // comprovante no estilo "notinha de maquininha", usado pelo cliente e pelo admin
+  function receiptHTML(o, { admin = false } = {}) {
+    const c = o.customer, k = o.checkout;
+    const lojista = c.type === "lojista";
+    const row = (a, b) => `<div class="rc__row"><span>${a}</span><span>${b}</span></div>`;
+    return `<div class="receipt-wrap ${o.status === "NEW" && admin ? "receipt-wrap--new" : ""}"><article class="receipt" id="rc-${esc(o.code)}">
+      <header class="rc__head">
+        <strong>TOP SMART</strong>
+        <small>Peças e Componentes</small>
+        <small>WhatsApp (33) 99941-4255</small>
+      </header>
+      <div class="rc__cut"></div>
+      <div class="rc__title">PEDIDO ${esc(o.code)}</div>
+      ${row("Data", fmtDate(o.createdAt))}
+      ${row("Situação", `<b class="rc__stage rc__stage--${o.stage}">${STAGE_LABEL[o.stage] || o.stage}</b>`)}
+      <div class="rc__cut"></div>
+      ${row(lojista ? "Razão social" : "Cliente", esc(k?.name || (lojista ? c.razao : c.name)))}
+      ${lojista && c.name ? row("Responsável", esc(c.name)) : ""}
+      ${row(lojista ? "CNPJ" : "CPF", esc(c.doc || "—"))}
+      ${row("Telefone", esc(k?.phone || c.phone || "—"))}
+      <div class="rc__cut"></div>
+      <div class="rc__items">${o.items.map((it) => `
+        <div class="rc__item"><span><b>${it.qty}x</b> ${esc(it.name)}${it.variant ? ` (${esc(it.variant)})` : ""}</span><span>${money(it.sub)}</span></div>`).join("")}
+      </div>
+      <div class="rc__cut"></div>
+      <div class="rc__total"><span>SUBTOTAL</span><span>${money(o.subtotal)}</span></div>
+      <div class="rc__cut"></div>
+      ${row("Pagamento", esc(PAYMENT_LABEL[k?.payment] || "a definir"))}
+      ${row("Entrega", k ? (k.delivery === "entrega" ? "Entregar no endereço" : "Retirar na loja") : "a definir")}
+      ${k?.delivery === "entrega" ? `<p class="rc__addr">${esc(fmtAddress(c.address))}</p>` : ""}
+      ${k?.note ? `<p class="rc__note">Obs.: ${esc(k.note)}</p>` : ""}
+      <div class="rc__cut"></div>
+      ${admin ? `<div class="rc__actions">
+          <select class="status status--${o.status}" data-status="${esc(o.code)}" aria-label="Status do pedido ${esc(o.code)}">${Object.entries(statusLabel).map(([s, v]) => `<option value="${s}" ${o.status === s ? "selected" : ""}>${v}</option>`).join("")}</select>
+          <a class="icon-btn icon-btn--sm" target="_blank" rel="noopener" href="https://wa.me/55${digits(k?.phone || c.phone)}" aria-label="Chamar cliente no WhatsApp">${icon("i-wa")}</a>
+          <button class="icon-btn icon-btn--sm" data-print="${esc(o.code)}" aria-label="Imprimir pedido ${esc(o.code)}">${icon("i-print")}</button>
+        </div>` : `<div class="rc__status">${statusLabel[o.status] || ""}</div>`}
+      <footer class="rc__foot">Obrigado pela preferência!<br>Aqui tem inovação!</footer>
+    </article>${o.status === "NEW" && admin ? `<span class="receipt-flag">NOVO</span>` : ""}</div>`;
+  }
+
   function viewSuccess(code) {
-    const order = store.get("ts_orders", []).find((o) => o.code === code);
+    const order = myOrders().find((o) => o.code === code);
     if (!order) return viewNotFound();
-    return `<div class="view container success">
+    const done = order.stage === "CONFIRMED";
+    return `<div class="view container success success--wide">
       <div class="success__icon">${icon("i-check")}</div>
-      <h1>Pedido enviado!</h1>
-      <p class="muted">O WhatsApp abriu com o resumo abaixo. É só tocar em enviar na conversa.</p>
-      <span class="code">${esc(order.code)}</span>
-      <div class="msg-preview">${esc(buildMessage(order))}</div>
-      <div class="slide__ctas" style="justify-content:center">
-        <a class="btn btn--wa" target="_blank" rel="noopener" href="https://wa.me/${whatsapp}?text=${encodeURIComponent(buildMessage(order))}">${icon("i-wa")}Abrir WhatsApp de novo</a>
-        ${cart.length ? `<button class="btn btn--ghost" data-clear-cart>Limpar carrinho</button>` : `<a class="btn btn--ghost" href="#/catalogo">Continuar comprando</a>`}
+      <h1>${done ? "Pedido enviado!" : "Pedido gerado!"}</h1>
+      <p class="muted">${done
+        ? "A loja já recebeu seu pedido. Se o WhatsApp não abriu, toque no botão abaixo e envie a mensagem."
+        : "Falta escolher entrega e forma de pagamento para enviar à loja."}</p>
+      <div class="success__grid">
+        <div id="success-receipt">${receiptHTML(order)}</div>
+        <div class="success__side">
+          ${done
+            ? `<a class="btn btn--wa btn--block" target="_blank" rel="noopener" href="${waLink(order)}">${icon("i-wa")}Abrir WhatsApp de novo</a>`
+            : `<button class="btn btn--primary btn--block" data-complete="${esc(order.code)}">${icon("i-check")}Completar e enviar</button>`}
+          <a class="btn btn--ghost btn--block" href="#/catalogo">Continuar comprando</a>
+          <a class="text-btn" href="#/conta">Ver meus pedidos</a>
+          ${done ? `<details class="msg-details"><summary>Mensagem enviada</summary><div class="msg-preview">${esc(buildMessage(order))}</div></details>` : ""}
+        </div>
       </div>
     </div>`;
+  }
+
+  // atualiza o status dos pedidos do cliente com o servidor (o admin pode ter mudado)
+  async function refreshMyOrders(onDone) {
+    try {
+      const { orders } = await ordersApi.mine(myOrders());
+      orders.forEach((o) => saveMyOrder(o));
+      onDone?.();
+    } catch { /* sem conexão: mantém o que está salvo */ }
   }
 
   // ---------- login + cadastro (cliente ou lojista) ----------
   const pwField = (name, label, auto) => `<label class="field">${label}<span class="pw"><input name="${name}" type="password" autocomplete="${auto}" required><button type="button" data-pw aria-label="Mostrar senha">${icon("i-eye")}</button></span><span class="err"></span></label>`;
   const fld = (name, label, attrs = "", cls = "") => `<label class="field ${cls}"><span>${label}</span><input name="${name}" ${attrs}><span class="err"></span></label>`;
+
+  // endereço com busca automática pelo CEP (ViaCEP)
+  const addressFields = () => `
+    <div class="form-section full">${icon("i-pin")}Endereço</div>
+    ${fld("cep", 'CEP <span class="cep-status" id="cep-status"></span>', 'inputmode="numeric" data-mask="cep" autocomplete="postal-code" placeholder="00000-000" required')}
+    ${fld("numero", "Número", 'inputmode="numeric" autocomplete="address-line2" required')}
+    ${fld("rua", "Rua", 'autocomplete="address-line1" required', "full")}
+    ${fld("complemento", 'Complemento <span class="opt">(opcional)</span>', 'placeholder="Apto, sala, ponto de referência"', "full")}
+    ${fld("bairro", "Bairro", "required")}
+    <div class="form-grid form-grid--city">
+      ${fld("cidade", "Cidade", 'autocomplete="address-level2" required')}
+      ${fld("uf", "UF", 'maxlength="2" autocomplete="address-level1" required')}
+    </div>`;
+
+  async function lookupCEP(input) {
+    const cep = digits(input.value);
+    const form = input.form, status = $("#cep-status");
+    if (cep.length !== 8 || form.dataset.cep === cep) return;
+    form.dataset.cep = cep;
+    status.textContent = "buscando…"; status.className = "cep-status";
+    try {
+      const r = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+      const d = await r.json();
+      if (d.erro) throw new Error("not found");
+      const set = (name, v) => { if (v) { form[name].value = v; setErr(form, name, ""); } };
+      set("rua", d.logradouro); set("bairro", d.bairro); set("cidade", d.localidade); set("uf", d.uf);
+      status.textContent = `${d.localidade}/${d.uf}`; status.className = "cep-status is-ok";
+      setErr(form, "cep", "");
+      (d.logradouro ? form.numero : form.rua).focus();
+    } catch {
+      status.textContent = ""; form.dataset.cep = "";
+      setErr(form, "cep", "CEP não encontrado. Confira ou preencha o endereço à mão.");
+    }
+  }
 
   function signupFields(tipo) {
     if (tipo === "lojista") {
@@ -707,6 +931,7 @@
         ${fld("responsavel", "Nome do responsável", 'autocomplete="name" required', "full")}
         ${fld("phone", "Telefone / WhatsApp", 'inputmode="tel" data-mask="phone" autocomplete="tel" placeholder="(33) 99999-9999" required')}
         ${fld("email", "E-mail", 'type="email" autocomplete="email" required')}
+        ${addressFields()}
         ${pwField("password", "Senha", "new-password")}
         ${pwField("confirm", "Confirmar senha", "new-password")}
       </div>`;
@@ -717,6 +942,7 @@
       ${fld("birth", "Data de nascimento", 'type="date" autocomplete="bday" required')}
       ${fld("phone", "Telefone / WhatsApp", 'inputmode="tel" data-mask="phone" autocomplete="tel" placeholder="(33) 99999-9999" required')}
       ${fld("email", "E-mail", 'type="email" autocomplete="email" required')}
+      ${addressFields()}
       ${pwField("password", "Senha", "new-password")}
       ${pwField("confirm", "Confirmar senha", "new-password")}
     </div>`;
@@ -765,14 +991,26 @@
   const statusLabel = { NEW: "Novo", IN_PROGRESS: "Em atendimento", DONE: "Concluído", CANCELED: "Cancelado" };
   const fmtDate = (iso) => new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 
+  function myOrdersHTML() {
+    const s = session();
+    const orders = myOrders().filter((o) => o.owner === s?.email);
+    if (!orders.length) return `<p class="muted">Você ainda não fez pedidos.</p>`;
+    return `<div class="table-wrap"><table><thead><tr><th>Pedido</th><th>Data</th><th>Itens</th><th>Subtotal</th><th>Situação</th><th>Status</th></tr></thead><tbody>
+      ${orders.map((o) => `<tr><td><a href="#/pedido/${o.code}" class="link-arrow">${o.code}</a></td><td>${fmtDate(o.createdAt)}</td><td>${o.items.reduce((n, it) => n + it.qty, 0)}</td><td>${money(o.subtotal)}</td>
+        <td>${o.stage === "PENDING" ? `<button class="text-btn" data-complete="${esc(o.code)}">Completar e enviar</button>` : STAGE_LABEL[o.stage]}</td>
+        <td><span class="status status--${o.status}">${statusLabel[o.status]}</span></td></tr>`).join("")}
+    </tbody></table></div>`;
+  }
+
   function viewAccount() {
     const s = session();
     if (!s) { location.hash = "#/login"; return ""; }
     if (s.role === "ADMIN") { location.hash = "#/admin"; return ""; }
-    const orders = store.get("ts_orders", []).filter((o) => o.userEmail === s.email);
     const data = s.type === "lojista"
       ? [["Razão social", s.razao], ["Nome fantasia", s.fantasia || "—"], ["CNPJ", s.cnpj], ["Responsável", s.responsavel], ["Telefone", s.phone], ["E-mail", s.email]]
       : [["Nome", s.name], ["CPF", s.cpf], ["Nascimento", s.birth ? new Date(s.birth + "T12:00").toLocaleDateString("pt-BR") : "—"], ["Telefone", s.phone], ["E-mail", s.email]];
+    data.push(["Endereço", s.address ? fmtAddress(s.address) : "Não cadastrado"]);
+    refreshMyOrders(() => { const el = $("#my-orders"); if (el) el.innerHTML = myOrdersHTML(); });
     return `<div class="view container">
       <nav class="crumbs" aria-label="Você está em"><a href="#/">Início</a>/<span>Minha conta</span></nav>
       <div class="page-head"><h1>Olá, ${esc(displayName(s).split(" ")[0])}</h1><p class="muted">${s.type === "lojista" ? '<span class="tag tag--pro">Lojista</span>' : '<span class="tag">Cliente</span>'}</p></div>
@@ -780,11 +1018,7 @@
         <div class="box"><h2>Meus dados</h2>
           <div class="table-wrap"><table><tbody>${data.map(([k, v]) => `<tr><th style="width:180px">${k}</th><td>${esc(v)}</td></tr>`).join("")}</tbody></table></div>
         </div>
-        <div class="box"><h2>Meus pedidos</h2>
-          ${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Pedido</th><th>Data</th><th>Itens</th><th>Total</th><th>Status</th></tr></thead><tbody>
-            ${orders.map((o) => `<tr><td><a href="#/pedido/${o.code}" class="link-arrow">${o.code}</a></td><td>${fmtDate(o.createdAt)}</td><td>${o.items.length}</td><td>${money(o.total)}</td><td><span class="status status--${o.status}">${statusLabel[o.status]}</span></td></tr>`).join("")}
-          </tbody></table></div>` : `<p class="muted">Você ainda não enviou pedidos.</p>`}
-        </div>
+        <div class="box"><h2>Meus pedidos</h2><div id="my-orders">${myOrdersHTML()}</div></div>
         <div><button class="btn btn--ghost" data-logout>Sair</button></div>
       </div>
     </div>`;
@@ -841,16 +1075,125 @@
       </div>`;
   }
 
+  // ---------- admin: pedidos em tempo (quase) real + notificações ----------
+  let adminOrdersList = null;   // null = ainda carregando
+  let adminVer;
+  let adminError = "";
+  let pollTimer = null;
+  let ordersFilter = "todos";
+  const POLL_MS = 15000;
+
+  function notifyPermissionHTML() {
+    if (!("Notification" in window)) return `<p class="notice">Este navegador não mostra notificações do sistema. Os avisos aparecem dentro do painel.</p>`;
+    if (Notification.permission === "granted") return `<p class="notice notice--ok">${icon("i-bell")}Notificações ativas. Deixe esta aba aberta para ser avisado de pedidos novos.</p>`;
+    if (Notification.permission === "denied") return `<p class="notice notice--warn">${icon("i-bell")}Notificações bloqueadas. Libere em “Configurações do site” (cadeado ao lado do endereço) para receber avisos.</p>`;
+    return `<div class="notice notice--cta">${icon("i-bell")}<span>Ative as notificações para ser avisado de cada pedido novo, mesmo com o navegador em outra janela.</span><button class="btn btn--primary" data-enable-notify>Ativar notificações</button></div>`;
+  }
+
+  function adminOrdersBody() {
+    if (adminError) return `<div class="empty">${esc(adminError)}</div>`;
+    if (!adminOrdersList) return `<div class="empty">Carregando pedidos…</div>`;
+    const filters = { todos: () => true, novos: (o) => o.status === "NEW", atendimento: (o) => o.status === "IN_PROGRESS", concluidos: (o) => o.status === "DONE" || o.status === "CANCELED" };
+    const list = adminOrdersList.filter(filters[ordersFilter] || filters.todos);
+    return `<div class="pills" role="group" aria-label="Filtrar pedidos">
+        ${[["todos", "Todos"], ["novos", "Novos"], ["atendimento", "Em atendimento"], ["concluidos", "Concluídos"]].map(([k, v]) =>
+          `<button class="pill ${ordersFilter === k ? "is-active" : ""}" data-orders-filter="${k}">${v} <span class="pill__n">${adminOrdersList.filter(filters[k]).length}</span></button>`).join("")}
+      </div>
+      ${list.length ? `<div class="tickets">${list.map((o) => receiptHTML(o, { admin: true })).join("")}</div>` : `<div class="empty">Nenhum pedido aqui.</div>`}`;
+  }
+
   function adminOrders() {
-    const orders = store.get("ts_orders", []);
-    return `<div class="box"><h2>Pedidos recebidos</h2>
-      ${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Pedido</th><th>Data</th><th>Cliente</th><th>Tipo</th><th>Telefone</th><th>Total</th><th>Status</th></tr></thead><tbody>
-        ${orders.map((o) => `<tr><td>${o.code}</td><td>${fmtDate(o.createdAt)}</td><td>${esc(o.customer.razao || o.customer.name)}</td>
-          <td>${o.customer.type === "lojista" ? '<span class="tag tag--pro">Lojista</span>' : '<span class="tag">Cliente</span>'}</td>
-          <td>${esc(o.customer.phone)}</td><td>${money(o.total)}</td>
-          <td><select class="status status--${o.status}" data-status="${o.code}" aria-label="Status do pedido ${o.code}">${Object.entries(statusLabel).map(([k, v]) => `<option value="${k}" ${o.status === k ? "selected" : ""}>${v}</option>`).join("")}</select></td></tr>`).join("")}
-      </tbody></table></div>` : `<p class="muted">Nenhum pedido ainda.</p>`}
+    return `<div class="box">
+      <div class="box__head"><h2>Pedidos recebidos</h2><span class="muted live-dot">Atualiza sozinho a cada 15 s</span></div>
+      <div id="notify-permission">${notifyPermissionHTML()}</div>
+      <div id="admin-orders-body">${adminOrdersBody()}</div>
     </div>`;
+  }
+
+  function rerenderAdminOrders() {
+    const el = $("#admin-orders-body");
+    if (el) el.innerHTML = adminOrdersBody();
+    const kpi = $("#kpi-new");
+    if (kpi && adminOrdersList) kpi.textContent = adminOrdersList.filter((o) => o.status === "NEW").length;
+    const n = adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : 0;
+    document.title = (n ? `(${n}) ` : "") + document.title.replace(/^\(\d+\)\s/, "");
+  }
+
+  // som curto de aviso (dois bipes)
+  function beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [0, 0.22].forEach((t) => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
+        g.gain.setValueAtTime(0.0001, ctx.currentTime + t);
+        g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + t + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.18);
+        o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.2);
+      });
+    } catch { /* sem áudio */ }
+  }
+
+  // aviso grande no canto inferior direito (na página) + notificação do sistema (Windows/macOS)
+  function notifyOrder(o, kind) {
+    const who = o.customer.type === "lojista" ? o.customer.razao : o.customer.name;
+    const qty = o.items.reduce((n, it) => n + it.qty, 0);
+    const title = kind === "new" ? `Novo pedido ${o.code}` : `Pedido ${o.code} confirmado`;
+    const body = kind === "new"
+      ? `${who} · ${qty} ${qty === 1 ? "item" : "itens"} · ${money(o.subtotal)}`
+      : `${who} · ${PAYMENT_LABEL[o.checkout?.payment] || ""} · ${o.checkout?.delivery === "entrega" ? "Entrega" : "Retirada na loja"}`;
+
+    const card = document.createElement("div");
+    card.className = "notify";
+    card.innerHTML = `<div class="notify__ic">${icon("i-bell")}</div>
+      <div class="notify__body"><small>${kind === "new" ? "Pedido novo" : "Cliente confirmou"} · agora</small><strong>${esc(title)}</strong><span>${esc(body)}</span>
+        <div class="notify__actions"><a class="btn btn--primary" href="#/admin?aba=pedidos" data-notify-close>Ver pedido</a><button class="btn btn--ghost" data-notify-close>Fechar</button></div></div>`;
+    $("#notify-stack").prepend(card);
+    [...$("#notify-stack").children].slice(4).forEach((n) => n.remove());
+    beep();
+
+    if ("Notification" in window && Notification.permission === "granted") {
+      try {
+        const n = new Notification(title, { body, icon: "assets/logo.png", tag: `${o.code}-${kind}`, requireInteraction: true });
+        n.onclick = () => { window.focus(); location.hash = "#/admin?aba=pedidos"; n.close(); };
+      } catch { /* alguns navegadores só notificam via service worker */ }
+    }
+  }
+
+  async function pollOrders() {
+    const s = session();
+    if (s?.role !== "ADMIN") return stopPolling();
+    try {
+      const data = await ordersApi.adminList(adminVer);
+      adminError = "";
+      if (data.changed !== false) {
+        const seen = new Set(store.get("ts_seen_orders", []));
+        const firstRun = !store.get("ts_seen_init", false);
+        const fresh = [];
+        data.orders.forEach((o) => {
+          const key = `${o.code}:${o.stage}`;
+          if (!seen.has(key)) { seen.add(key); if (!firstRun) fresh.push(o); }
+        });
+        store.set("ts_seen_orders", [...seen].slice(-500));
+        store.set("ts_seen_init", true);
+        fresh.slice(0, 4).reverse().forEach((o) => notifyOrder(o, o.stage === "CONFIRMED" ? "confirmed" : "new"));
+        adminOrdersList = data.orders;
+        adminVer = data.ver;
+        rerenderAdminOrders();
+      }
+    } catch (err) {
+      adminError = err.status === 401 ? "Sessão do admin expirou. Saia e entre de novo." : `Não foi possível carregar os pedidos (${err.message}).`;
+      if (!adminOrdersList) rerenderAdminOrders();
+    }
+  }
+  function startPolling() {
+    if (pollTimer) return;
+    pollOrders();
+    pollTimer = setInterval(pollOrders, POLL_MS);
+  }
+  function stopPolling() {
+    clearInterval(pollTimer); pollTimer = null;
+    adminOrdersList = null; adminVer = undefined;
   }
 
   function adminUsers() {
@@ -871,7 +1214,7 @@
     }
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
     const tab = params.get("aba") || "produtos";
-    const orders = store.get("ts_orders", []);
+    const newCount = adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : "…";
     const tabs = { produtos: "Produtos", pedidos: "Pedidos", cadastros: "Cadastros", config: "Configurações" };
     const body = { produtos: adminProducts, pedidos: adminOrders, cadastros: adminUsers, config: () => `<div class="box"><h2>Configurações</h2>
       <label class="field" style="max-width:320px">WhatsApp que recebe os pedidos<input value="${whatsapp}" disabled></label>
@@ -882,7 +1225,7 @@
         <div class="kpis">
           <div class="kpi"><span>Produtos</span><strong>${products.length}</strong></div>
           <div class="kpi"><span>Sem estoque</span><strong>${products.filter((p) => p.stock <= 0).length}</strong></div>
-          <div class="kpi"><span>Pedidos novos</span><strong>${orders.filter((o) => o.status === "NEW").length}</strong></div>
+          <a class="kpi kpi--link" href="#/admin?aba=pedidos"><span>Pedidos novos</span><strong id="kpi-new">${newCount}</strong></a>
           <div class="kpi"><span>Cadastros</span><strong>${store.get("ts_users", []).length}</strong></div>
         </div>
         <div class="admin-tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<a class="pill" role="tab" aria-selected="${tab === k}" href="#/admin?aba=${k}">${v}</a>`).join("")}</div>
@@ -945,6 +1288,7 @@
     }
     if (html !== null) main.innerHTML = html;
     if (!parts[0]) initSlider();
+    if (session()?.role === "ADMIN") startPolling();
     const sp = new URLSearchParams(location.hash.split("?")[1] || "");
     $("#search-input").value = sp.get("q") || "";
     renderHeader();
@@ -1046,17 +1390,36 @@
       }
     }
     else if ("soon" in d) { e.preventDefault(); toast("Página institucional: conteúdo a definir com o cliente"); }
-    else if ("logout" in d) { store.set("ts_session", null); toast("Você saiu da conta"); location.hash = "#/"; }
+    else if ("logout" in d) { store.set("ts_session", null); store.set("ts_admin_key", ""); stopPolling(); toast("Você saiu da conta"); location.hash = "#/"; }
+    else if (d.ordersFilter) { ordersFilter = d.ordersFilter; rerenderAdminOrders(); }
+    else if ("enableNotify" in d) {
+      Notification.requestPermission().then((p) => {
+        $("#notify-permission").innerHTML = notifyPermissionHTML();
+        if (p === "granted") new Notification("Notificações ativas", { body: "Você será avisado de cada pedido novo da Top Smart.", icon: "assets/logo.png" });
+      });
+    }
+    else if ("notifyClose" in d) t.closest(".notify")?.remove();
+    else if (d.print) {
+      const rc = document.getElementById(`rc-${d.print}`);
+      rc.classList.add("is-printing"); document.body.classList.add("printing");
+      window.print();
+      rc.classList.remove("is-printing"); document.body.classList.remove("printing");
+    }
+    else if (d.complete) { const o = myOrders().find((x) => x.code === d.complete); if (o) openCheckout(o); }
   });
 
   document.addEventListener("change", (e) => {
     const t = e.target;
     if (t.dataset.status) {
-      const orders = store.get("ts_orders", []);
-      const o = orders.find((x) => x.code === t.dataset.status);
-      o.status = t.value; store.set("ts_orders", orders);
-      t.className = `status status--${t.value}`;
-      toast(`Pedido ${o.code}: ${statusLabel[t.value]}`);
+      const code = t.dataset.status, status = t.value;
+      t.className = `status status--${status}`;
+      ordersApi.setStatus(code, status).then((r) => {
+        const o = adminOrdersList?.find((x) => x.code === code);
+        if (o) o.status = status;
+        if (r.ver) adminVer = r.ver;
+        rerenderAdminOrders();
+        toast(`Pedido ${code}: ${statusLabel[status]}`);
+      }).catch((err) => { toast(err.message); pollOrders(); });
     } else if (t.name === "photo") {
       handlePhoto(t.files[0]);
     } else if (t.dataset.filter) {
@@ -1068,6 +1431,7 @@
     const t = e.target;
     const m = t.dataset.mask || (t.name === "phone" ? "phone" : null);
     if (m) t.value = masks[m](t.value);
+    if (t.name === "cep" && t.form?.id === "signup-form") lookupCEP(t);
     if (t.form?.id === "product-form" && (t.name === "name" || t.name === "code")) {
       const f = t.form;
       const preview = fullName({ name: f.name.value.trim() || "Nome", code: f.code.value.trim() || "CÓDIGO" });
@@ -1112,7 +1476,8 @@
       const u = users().find((x) => x.email.toLowerCase() === email && x.password === form.password.value);
       if (!u) return setErr(form, "password", "E-mail ou senha incorretos");
       login(u);
-      location.hash = u.role === "ADMIN" ? "#/admin" : returnTo();
+      if (u.role === "ADMIN") store.set("ts_admin_key", form.password.value);
+      location.hash = u.role === "ADMIN" ? "#/admin?aba=pedidos" : returnTo();
       return;
     }
     if (form.id === "signup-form") {
@@ -1121,6 +1486,9 @@
       const pw = form.password.value;
       const common = {
         phone: phoneRule, email: (v) => emailRule(v) || (users().some((u) => u.email.toLowerCase() === v.toLowerCase()) ? "E-mail já cadastrado" : ""),
+        cep: (v) => !v ? "Campo obrigatório" : digits(v).length === 8 ? "" : "CEP incompleto",
+        numero: req(), rua: req(), bairro: req(), cidade: req(),
+        uf: (v) => /^[A-Za-z]{2}$/.test(v) ? "" : "UF com 2 letras",
         password: (v) => !v ? "Campo obrigatório" : v.length < 6 ? "Mínimo de 6 caracteres" : "",
         confirm: (v) => v === pw ? "" : "As senhas não conferem",
       };
@@ -1139,6 +1507,9 @@
       if (!validate(form, rules)) return;
       const data = Object.fromEntries(new FormData(form));
       delete data.confirm;
+      const address = { cep: data.cep, rua: data.rua.trim(), numero: data.numero.trim(), complemento: data.complemento.trim(), bairro: data.bairro.trim(), cidade: data.cidade.trim(), uf: data.uf.trim().toUpperCase() };
+      ["cep", "rua", "numero", "complemento", "bairro", "cidade", "uf"].forEach((k) => delete data[k]);
+      data.address = address;
       // Esboço: senha em texto puro no navegador. Na versão final: bcrypt no servidor.
       const u = { ...data, type: tipo, role: "CUSTOMER", email: data.email.trim(), createdAt: Date.now() };
       store.set("ts_users", [...store.get("ts_users", []), u]);
