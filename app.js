@@ -83,6 +83,8 @@
   products.forEach((p, i) => {
     p.code ||= (CODE_PREFIX[p.cat] || "TS") + (digits(p.sku) || 3000 + i);
     p.priceLoj ??= Math.round(p.price * 0.8 * 10) / 10;
+    // custo de exemplo (55% do preço) só para os produtos de demonstração; o admin edita no cadastro
+    p.cost ??= Math.round(p.price * 0.55 * 10) / 10;
   });
   const saveProducts = () => store.set("ts_products", products);
   saveProducts();
@@ -1151,6 +1153,7 @@
             <p class="code-preview full" id="code-preview">${p ? `Aparece no site como: <strong>${esc(fullName(p))}</strong>` : "Aparece no site como: <strong>Nome - CÓDIGO</strong>"}</p>
             <label class="field"><span>Preço consumidor</span><span class="money-input"><span>R$</span><input name="price" inputmode="decimal" required placeholder="0,00" value="${p ? p.price.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
             <label class="field"><span>Preço lojista</span><span class="money-input"><span>R$</span><input name="priceLoj" inputmode="decimal" required placeholder="0,00" value="${p ? p.priceLoj.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
+            <label class="field"><span>Preço de custo <span class="opt">(só o admin vê)</span></span><span class="money-input"><span>R$</span><input name="cost" inputmode="decimal" placeholder="0,00" value="${p?.cost != null ? p.cost.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
             <label class="field"><span>Quantidade em estoque</span><input name="stock" type="number" min="0" step="1" inputmode="numeric" required value="${p ? p.stock : ""}"><span class="err"></span></label>
             <label class="field"><span>Categoria</span><select name="cat">${categories.map((c) => `<option value="${c.slug}" ${(p?.cat || "telas") === c.slug ? "selected" : ""}>${c.name}</option>`).join("")}</select></label>
             <label class="field"><span>Marca do aparelho</span><select name="brand"><option value="">Nenhuma / universal</option>${Object.keys(brands).map((b) => `<option ${p?.brand === b ? "selected" : ""}>${b}</option>`).join("")}</select></label>
@@ -1252,6 +1255,8 @@
   function rerenderAdminOrders() {
     const el = $("#admin-orders-body");
     if (el) el.innerHTML = adminOrdersBody();
+    const ordersN = $("#tab-orders-n");
+    if (ordersN && adminOrdersList) ordersN.textContent = adminOrdersList.filter((o) => o.status === "NEW").length || "";
     const kpi = $("#kpi-new");
     if (kpi && adminOrdersList) kpi.textContent = adminOrdersList.filter((o) => o.status === "NEW").length;
     const n = adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : 0;
@@ -1449,26 +1454,30 @@
         <div class="empty">Área restrita ao administrador.<br><a class="btn btn--primary" href="#/login" style="margin-top:16px">Entrar</a></div></div>`;
     }
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
-    const tab = params.get("aba") || "produtos";
-    const newCount = adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : "…";
-    const tabs = { produtos: "Produtos", pedidos: "Pedidos", "avise-me": "Avise-me", cadastros: "Cadastros", config: "Configurações" };
-    const body = { produtos: adminProducts, pedidos: adminOrders, "avise-me": adminAlertsTab, cadastros: adminUsers, config: () => `<div class="box"><h2>Configurações</h2>
-      <label class="field" style="max-width:320px">WhatsApp que recebe os pedidos<input value="${whatsapp}" disabled></label>
-      <p class="notice">Na versão final esse número é editável aqui e fica salvo no banco.</p></div>` }[tab] || adminProducts;
-    return `<div class="view container">
-      <div class="page-head"><h1>Painel</h1><p class="muted">Olá, ${esc(s.name)}.</p></div>
-      <div class="panel">
-        <div class="kpis">
-          <div class="kpi"><span>Produtos</span><strong>${products.length}</strong></div>
-          <div class="kpi"><span>Sem estoque</span><strong>${products.filter((p) => p.stock <= 0).length}</strong></div>
-          <a class="kpi kpi--link" href="#/admin?aba=pedidos"><span>Pedidos novos</span><strong id="kpi-new">${newCount}</strong></a>
-          <a class="kpi kpi--link" href="#/admin?aba=avise-me"><span>Avise-me aguardando</span><strong id="kpi-alerts">${adminAlerts ? pendingAlerts().length : "…"}</strong></a>
-          <div class="kpi"><span>Cadastros</span><strong>${store.get("ts_users", []).length}</strong></div>
-        </div>
-        <div class="admin-tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<a class="pill" role="tab" aria-selected="${tab === k}" href="#/admin?aba=${k}">${v}${k === "avise-me" ? `<span class="pill__n" id="tab-alerts-n">${pendingAlerts().length || ""}</span>` : ""}</a>`).join("")}</div>
-        ${body()}
-        <div><button class="btn btn--ghost" data-logout>Sair</button></div>
-      </div>
+    // telas do ponto de venda, caixa e relatórios vêm do pdv.js
+    const ext = window.TS_EXT?.tabs || {};
+    const tab = params.get("aba") || (ext.inicio ? "inicio" : "produtos");
+    const config = () => `<div class="box"><h2>Configurações</h2>
+      <label class="field" style="max-width:320px"><span>WhatsApp que recebe os pedidos</span><input value="${whatsapp}" disabled></label>
+      <p class="notice">Na versão final esse número é editável aqui e fica salvo no banco.</p></div>`;
+    const body = { produtos: adminProducts, pedidos: adminOrders, "avise-me": adminAlertsTab, cadastros: adminUsers, config, ...ext }[tab] || adminProducts;
+    const groups = [
+      ["Vendas", [["inicio", "Início", "i-home"], ["balcao", "Venda balcão", "i-store"], ["pedidos", "Pedidos do site", "i-bag"], ["avise-me", "Avise-me", "i-bell"]]],
+      ["Financeiro", [["caixa", "Caixa", "i-cash"], ["relatorios", "Relatórios", "i-chart"]]],
+      ["Cadastros", [["produtos", "Produtos", "i-tag"], ["cadastros", "Clientes", "i-user"], ["equipe", "Lojas e vendedores", "i-users"]]],
+      ["Sistema", [["config", "Configurações", "i-gear"]]],
+    ];
+    const badge = (k) => k === "avise-me" ? `<span class="side__n" id="tab-alerts-n">${pendingAlerts().length || ""}</span>`
+      : k === "pedidos" ? `<span class="side__n" id="tab-orders-n">${adminOrdersList?.filter((o) => o.status === "NEW").length || ""}</span>` : "";
+    return `<div class="view admin">
+      <nav class="side" aria-label="Painel">
+        <div class="side__who"><strong>${esc(s.name)}</strong><button class="text-btn" data-logout>Sair</button></div>
+        ${groups.map(([g, items]) => `<div class="side__group"><span class="side__label">${g}</span>
+          ${items.filter(([k]) => k in ext || !["inicio", "balcao", "caixa", "relatorios", "equipe"].includes(k)).map(([k, v, ic]) =>
+            `<a class="side__link ${tab === k ? "is-active" : ""}" href="#/admin?aba=${k}" ${tab === k ? 'aria-current="page"' : ""}>${icon(ic)}<span>${v}</span>${badge(k)}</a>`).join("")}
+        </div>`).join("")}
+      </nav>
+      <div class="admin__main" id="admin-main">${body()}</div>
     </div>`;
   }
 
@@ -1510,6 +1519,7 @@
     const parts = path.split("/").filter(Boolean);
     closeDrawer();
     document.querySelectorAll("dialog[open]").forEach((dlg) => dlg.close());
+    document.body.classList.toggle("is-admin", parts[0] === "admin" && session()?.role === "ADMIN");
     clearInterval(sliderTimer);
     let html;
     switch (parts[0]) {
@@ -1817,6 +1827,7 @@
         stock: parseInt(form.stock.value, 10),
         price: Math.round(parseMoney(form.price.value) * 100) / 100,
         priceLoj: Math.round(parseMoney(form.priceLoj.value) * 100) / 100,
+        cost: form.cost.value.trim() ? Math.max(0, Math.round(parseMoney(form.cost.value) * 100) / 100) : 0,
         cat: form.cat.value, brand: form.brand.value,
         models: form.models.value.split(",").map((m) => m.trim()).filter(Boolean),
         image: pendingImage || existing?.image,
@@ -1851,6 +1862,16 @@
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#drawer").classList.contains("is-open")) closeDrawer(); });
 
   window.addEventListener("hashchange", () => { router(); window.scrollTo(0, 0); });
+
+  // funções compartilhadas com o pdv.js (ponto de venda, caixa e relatórios)
+  window.TS = {
+    $, money, esc, icon, digits, masks, store, toast, session, adminAuth, fmtDate, fullName, catBy, media, prodBy, users,
+    fetchJSON, router, saveProducts, PAYMENT_LABEL, whatsapp, validate, setErr, req, phoneRule,
+    get products() { return products; },
+    get newOrders() { return adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : null; },
+    get pendingAlerts() { return adminAlerts ? pendingAlerts().length : null; },
+  };
+
   renderNav();
   router();
 })();
