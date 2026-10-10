@@ -162,7 +162,9 @@
       <div>
         <div class="citem__name">${esc(fullName(l.p))}</div>
         ${l.variant ? `<div class="citem__var">${esc(l.variant)}</div>` : ""}
-        <div class="citem__line">
+        ${l.p.stock <= 0 ? `<div class="citem__out">${icon("i-lock")}Esgotou agora. Remova para fechar o pedido.
+          <button class="text-btn" data-alert="${l.p.id}">${hasMyAlert(l.p.id) ? "Aviso ativado" : "Avise-me"}</button></div>` : ""}
+        <div class="citem__line" ${l.p.stock <= 0 ? 'style="opacity:.5"' : ""}>
           <div class="qty qty--sm">
             <button data-qty="${esc(k)}" data-d="-1" aria-label="Diminuir">${icon("i-minus")}</button>
             <span>${l.qty}</span>
@@ -269,6 +271,100 @@
     },
   };
 
+  // ---------- Avise-me: API com modo local para testes em file:// ----------
+  const alertsApi = {
+    req: (method, query, body, admin) => fetchJSON(`/api/alerts${query || ""}`, method, body, admin),
+    async create(payload) {
+      if (REMOTE) return this.req("POST", "", payload);
+      const all = store.get("ts_alerts", []);
+      const alert = { ...payload, id: crypto.randomUUID(), status: "PENDING", createdAt: new Date().toISOString() };
+      store.set("ts_alerts", [alert, ...all]);
+      return { alert };
+    },
+    async list() {
+      if (REMOTE) return this.req("GET", "", null, true);
+      return { alerts: store.get("ts_alerts", []) };
+    },
+    async setStatus(id, status) {
+      if (REMOTE) return this.req("PUT", `?id=${encodeURIComponent(id)}`, { status }, true);
+      const all = store.get("ts_alerts", []);
+      all.find((a) => a.id === id).status = status;
+      store.set("ts_alerts", all);
+      return {};
+    },
+    async remove(id) {
+      if (REMOTE) return this.req("DELETE", `?id=${encodeURIComponent(id)}`, null, true);
+      store.set("ts_alerts", store.get("ts_alerts", []).filter((a) => a.id !== id));
+      return {};
+    },
+  };
+  async function fetchJSON(url, method, body, admin) {
+    const headers = { "Content-Type": "application/json" };
+    if (admin) headers["x-admin-key"] = store.get("ts_admin_key", "");
+    const r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(data.error || "Falha na comunicação com a loja"), { status: r.status });
+    return data;
+  }
+
+  // produtos que este aparelho já pediu aviso (só para mostrar "Aviso ativado")
+  const myAlerts = () => store.get("ts_my_alerts", []);
+  const hasMyAlert = (id) => myAlerts().includes(id);
+
+  function openAlert(productId) {
+    const p = prodBy(productId);
+    if (!p) return;
+    const f = $("#alert-form"), s = session();
+    f.reset();
+    f.dataset.product = p.id;
+    f.querySelectorAll(".err").forEach((e) => (e.textContent = ""));
+    $("#alert-product").innerHTML = `<span class="row__thumb">${media(p)}</span><div><strong>${esc(fullName(p))}</strong><span class="stock stock--out">Esgotado</span></div>`;
+    if (s && s.role !== "ADMIN") {
+      f.name.value = s.type === "lojista" ? (s.fantasia || s.razao) : s.name;
+      f.email.value = s.email || "";
+      f.phone.value = s.phone || "";
+    }
+    syncAlertFields();
+    $("#alert-submit").disabled = false;
+    $("#alert-modal").showModal();
+  }
+  function syncAlertFields() {
+    const f = $("#alert-form");
+    const ch = [...f.querySelectorAll("[name=channel]:checked")].map((c) => c.value);
+    $("#alert-email-field").hidden = !ch.includes("email");
+    $("#alert-phone-field").hidden = !ch.includes("whatsapp");
+    if (ch.length) $("#channel-err").textContent = "";
+  }
+  $("#alert-form").addEventListener("change", (e) => { if (e.target.name === "channel") syncAlertFields(); });
+  $("#alert-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target, p = prodBy(f.dataset.product);
+    const channels = [...f.querySelectorAll("[name=channel]:checked")].map((c) => c.value);
+    $("#channel-err").textContent = channels.length ? "" : "Marque e-mail, WhatsApp ou os dois";
+    const rules = { name: req() };
+    if (channels.includes("email")) rules.email = emailRule;
+    if (channels.includes("whatsapp")) rules.phone = phoneRule;
+    if (!validate(f, rules) || !channels.length || !p) return;
+    const btn = $("#alert-submit");
+    btn.disabled = true;
+    try {
+      await alertsApi.create({
+        product: { id: p.id, name: p.name, code: p.code },
+        name: f.name.value.trim(), channels,
+        email: channels.includes("email") ? f.email.value.trim() : "",
+        phone: channels.includes("whatsapp") ? f.phone.value.trim() : "",
+        customerType: session()?.type === "lojista" ? "lojista" : "cliente",
+      });
+      store.set("ts_my_alerts", [...new Set([...myAlerts(), p.id])]);
+      $("#alert-modal").close();
+      toast(`Pronto! Avisaremos por ${channels.map((c) => (c === "email" ? "e-mail" : "WhatsApp")).join(" e ")} quando chegar.`);
+      router();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message);
+    }
+  });
+
   // pedidos do cliente neste aparelho (código + token para consultar o status)
   const myOrders = () => store.get("ts_my_orders", []);
   function saveMyOrder(order, token) {
@@ -315,6 +411,8 @@
     if (!cart.length) return;
     closeDrawer();
     if (!canSeePrice()) { toast("Entre na sua conta para enviar o pedido"); location.hash = loginHref(); return; }
+    const out = cartLines().filter((l) => l.p.stock <= 0);
+    if (out.length) { toast(`${fullName(out[0].p)} esgotou. Remova do carrinho ou toque em Avise-me.`); openDrawer(); return; }
     const lines = cartLines();
     $("#confirm-list").innerHTML = lines.map((l) => `<div class="total-line"><span>${l.qty}x ${esc(fullName(l.p))}${l.variant ? ` <small class="muted">(${esc(l.variant)})</small>` : ""}</span><span>${money(l.sub)}</span></div>`).join("")
       + `<div class="total-line confirm-total"><span>Subtotal</span><strong>${money(cartTotal())}</strong></div>`;
@@ -411,7 +509,9 @@
     if (p.stock <= 3) return `<span class="stock stock--low">Últimas ${p.stock}</span>`;
     return `<span class="stock">${p.stock} em estoque</span>`;
   }
-  const addBtn = (p) => `<button class="add-btn" data-add="${p.id}" ${p.stock <= 0 ? "disabled" : ""} aria-label="Adicionar ${esc(fullName(p))} ao carrinho">${icon("i-plus")}</button>`;
+  const addBtn = (p) => p.stock <= 0
+    ? `<button class="alert-btn ${hasMyAlert(p.id) ? "is-on" : ""}" data-alert="${p.id}" aria-label="${hasMyAlert(p.id) ? "Aviso ativado para" : "Avise-me quando chegar"} ${esc(fullName(p))}">${icon(hasMyAlert(p.id) ? "i-check" : "i-bell")}<span>${hasMyAlert(p.id) ? "Avisaremos" : "Avise-me"}</span></button>`
+    : `<button class="add-btn" data-add="${p.id}" aria-label="Adicionar ${esc(fullName(p))} ao carrinho">${icon("i-plus")}</button>`;
 
   const card = (p) => `<article class="card">
     <a href="#/produto/${p.slug}" class="card__media">${media(p)}${tags(p)}</a>
@@ -779,7 +879,9 @@
             <div class="qty" aria-label="Quantidade">
               <button data-pdq="-1" aria-label="Diminuir">${icon("i-minus")}</button><span id="pd-qty">1</span><button data-pdq="1" aria-label="Aumentar">${icon("i-plus")}</button>
             </div>
-            <button class="btn btn--primary" style="flex:1" data-pd-add="${p.id}" ${p.stock <= 0 ? "disabled" : ""}>${icon("i-bag")}${p.stock <= 0 ? "Esgotado" : "Adicionar ao carrinho"}</button>
+            ${p.stock <= 0
+              ? `<button class="btn ${hasMyAlert(p.id) ? "btn--ghost" : "btn--dark"}" style="flex:1" data-alert="${p.id}">${icon(hasMyAlert(p.id) ? "i-check" : "i-bell")}${hasMyAlert(p.id) ? "Aviso ativado · alterar" : "Avise-me quando chegar"}</button>`
+              : `<button class="btn btn--primary" style="flex:1" data-pd-add="${p.id}">${icon("i-bag")}Adicionar ao carrinho</button>`}
           </div>
           ${p.models.length ? `<div class="opt-label">Compatível com</div><div class="compat">${p.models.map((m) => `<span>${esc(m)}</span>`).join("")}</div>` : ""}
           <p class="product__desc">${esc(p.description || "Peça com garantia da loja. Dúvida sobre compatibilidade? Chame no WhatsApp antes de fechar o pedido.")}</p>
@@ -1143,19 +1245,32 @@
       ? `${who} · ${qty} ${qty === 1 ? "item" : "itens"} · ${money(o.subtotal)}`
       : `${who} · ${PAYMENT_LABEL[o.checkout?.payment] || ""} · ${o.checkout?.delivery === "entrega" ? "Entrega" : "Retirada na loja"}`;
 
+    showNotify({ label: kind === "new" ? "Pedido novo" : "Cliente confirmou", title, body, href: "#/admin?aba=pedidos", cta: "Ver pedido", tag: `${o.code}-${kind}` });
+  }
+
+  function notifyAlert(a, waiting) {
+    showNotify({
+      label: "Avise-me", variant: "alert",
+      title: `Querem: ${a.product.name}${a.product.code ? ` - ${a.product.code}` : ""}`,
+      body: `${a.name || "Cliente"} quer aviso por ${a.channels.map((c) => (c === "email" ? "e-mail" : "WhatsApp")).join(" e ")} · ${waiting} ${waiting === 1 ? "pessoa aguardando" : "pessoas aguardando"}`,
+      href: "#/admin?aba=avise-me", cta: "Ver avisos", tag: `alert-${a.id}`,
+    });
+  }
+
+  function showNotify({ label, title, body, href, cta, tag, variant = "" }) {
     const card = document.createElement("div");
-    card.className = "notify";
+    card.className = `notify ${variant ? `notify--${variant}` : ""}`;
     card.innerHTML = `<div class="notify__ic">${icon("i-bell")}</div>
-      <div class="notify__body"><small>${kind === "new" ? "Pedido novo" : "Cliente confirmou"} · agora</small><strong>${esc(title)}</strong><span>${esc(body)}</span>
-        <div class="notify__actions"><a class="btn btn--primary" href="#/admin?aba=pedidos" data-notify-close>Ver pedido</a><button class="btn btn--ghost" data-notify-close>Fechar</button></div></div>`;
+      <div class="notify__body"><small>${esc(label)} · agora</small><strong>${esc(title)}</strong><span>${esc(body)}</span>
+        <div class="notify__actions"><a class="btn btn--primary" href="${href}" data-notify-close>${cta}</a><button class="btn btn--ghost" data-notify-close>Fechar</button></div></div>`;
     $("#notify-stack").prepend(card);
     [...$("#notify-stack").children].slice(4).forEach((n) => n.remove());
     beep();
 
     if ("Notification" in window && Notification.permission === "granted") {
       try {
-        const n = new Notification(title, { body, icon: "assets/logo.png", tag: `${o.code}-${kind}`, requireInteraction: true });
-        n.onclick = () => { window.focus(); location.hash = "#/admin?aba=pedidos"; n.close(); };
+        const n = new Notification(title, { body, icon: "assets/logo.png", tag, requireInteraction: true });
+        n.onclick = () => { window.focus(); location.hash = href; n.close(); };
       } catch { /* alguns navegadores só notificam via service worker */ }
     }
   }
@@ -1180,6 +1295,7 @@
         adminOrdersList = data.orders;
         adminVer = data.ver;
         rerenderAdminOrders();
+        await pollAlerts();
       }
     } catch (err) {
       adminError = err.status === 401 ? "Sessão do admin expirou. Saia e entre de novo." : `Não foi possível carregar os pedidos (${err.message}).`;
@@ -1194,6 +1310,82 @@
   function stopPolling() {
     clearInterval(pollTimer); pollTimer = null;
     adminOrdersList = null; adminVer = undefined;
+  }
+
+  // ---------- admin: Avise-me ----------
+  let adminAlerts = null;
+  async function pollAlerts() {
+    try {
+      const { alerts } = await alertsApi.list();
+      const seen = new Set(store.get("ts_seen_alerts", []));
+      const firstRun = !store.get("ts_seen_alerts_init", false);
+      const fresh = alerts.filter((a) => a.status === "PENDING" && !seen.has(a.id));
+      alerts.forEach((a) => seen.add(a.id));
+      store.set("ts_seen_alerts", [...seen].slice(-1000));
+      store.set("ts_seen_alerts_init", true);
+      adminAlerts = alerts;
+      if (!firstRun) fresh.slice(0, 3).forEach((a) => notifyAlert(a, pendingAlerts(a.product.id).length));
+      rerenderAlerts();
+    } catch { /* tenta de novo no próximo ciclo */ }
+  }
+  const pendingAlerts = (productId) => (adminAlerts || []).filter((a) => a.status === "PENDING" && (!productId || a.product.id === productId));
+
+  function rerenderAlerts() {
+    const el = $("#admin-alerts-body");
+    if (el) el.innerHTML = adminAlertsBody();
+    const n = pendingAlerts().length;
+    const k = $("#kpi-alerts");
+    if (k) k.textContent = n;
+    const tab = $("#tab-alerts-n");
+    if (tab) tab.textContent = n || "";
+  }
+
+  const restockMessage = (a) => `Olá${a.name ? `, ${a.name.split(" ")[0]}` : ""}! Aqui é da Top Smart. O produto que você pediu para ser avisado voltou ao estoque: ${a.product.name}${a.product.code ? ` - ${a.product.code}` : ""}. ${location.origin}${location.pathname}#/produto/${a.product.id}`;
+
+  function adminAlertsBody() {
+    if (!adminAlerts) return `<div class="empty">Carregando avisos…</div>`;
+    if (!adminAlerts.length) return `<div class="empty">Ninguém pediu aviso ainda. Quando um produto esgota, o botão “Avise-me” aparece para os clientes.</div>`;
+    const groups = {};
+    adminAlerts.forEach((a) => (groups[a.product.id] ||= []).push(a));
+    return Object.entries(groups)
+      .sort(([, a], [, b]) => b.filter((x) => x.status === "PENDING").length - a.filter((x) => x.status === "PENDING").length)
+      .map(([pid, list]) => {
+        const p = prodBy(pid);
+        const pend = list.filter((a) => a.status === "PENDING").length;
+        const first = list[0].product;
+        return `<section class="alert-group">
+          <header class="alert-group__head">
+            <span class="thumb-sm">${p?.image ? `<img class="thumb-sm" src="${p.image}" alt="">` : icon(p ? catBy(p.cat).icon : "i-bell")}</span>
+            <div class="alert-group__title"><strong>${esc(first.name)}${first.code ? ` - ${esc(first.code)}` : ""}</strong>
+              ${p ? (p.stock > 0 ? `<span class="stock">Em estoque: ${p.stock}</span>` : `<span class="stock stock--out">Esgotado</span>`) : `<span class="muted">Produto removido</span>`}</div>
+            <span class="alert-count ${pend ? "" : "is-zero"}">${pend} aguardando</span>
+            ${p ? `<button class="btn btn--ghost btn--sm" data-edit="${p.id}" data-edit-tab>Repor estoque</button>` : ""}
+          </header>
+          <div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Avisar por</th><th>Pediu em</th><th>Situação</th><th></th></tr></thead><tbody>
+            ${list.map((a) => `<tr>
+              <td><b>${esc(a.name || "—")}</b>${a.customerType === "lojista" ? ' <span class="tag tag--pro">Lojista</span>' : ""}<br><small class="muted">${esc([a.email, a.phone].filter(Boolean).join(" · "))}</small></td>
+              <td><div class="tbl-actions">
+                ${a.channels.includes("whatsapp") ? `<a class="chan chan--wa" target="_blank" rel="noopener" href="https://wa.me/55${digits(a.phone)}?text=${encodeURIComponent(restockMessage(a))}">${icon("i-wa")}WhatsApp</a>` : ""}
+                ${a.channels.includes("email") ? `<a class="chan" href="mailto:${esc(a.email)}?subject=${encodeURIComponent(`${a.product.name} voltou ao estoque - Top Smart`)}&body=${encodeURIComponent(restockMessage(a))}">${icon("i-mail")}E-mail</a>` : ""}
+              </div></td>
+              <td>${fmtDate(a.createdAt)}</td>
+              <td>${a.status === "PENDING" ? `<span class="status status--IN_PROGRESS">Aguardando</span>` : `<span class="status status--DONE">Avisado</span>`}</td>
+              <td><div class="tbl-actions">
+                <button data-alert-status="${a.id}" data-to="${a.status === "PENDING" ? "NOTIFIED" : "PENDING"}" title="${a.status === "PENDING" ? "Marcar como avisado" : "Voltar para aguardando"}" aria-label="${a.status === "PENDING" ? "Marcar como avisado" : "Voltar para aguardando"}">${icon(a.status === "PENDING" ? "i-check" : "i-bell")}</button>
+                <button class="danger" data-alert-del="${a.id}" title="Remover" aria-label="Remover aviso">${icon("i-trash")}</button>
+              </div></td>
+            </tr>`).join("")}
+          </tbody></table></div>
+        </section>`;
+      }).join("");
+  }
+
+  function adminAlertsTab() {
+    return `<div class="box">
+      <div class="box__head"><h2>Avise-me</h2><span class="muted">Clientes esperando produtos esgotados</span></div>
+      <p class="notice">Quando repor o estoque, toque em WhatsApp ou E-mail para mandar o aviso já escrito e depois marque como avisado.</p>
+      <div id="admin-alerts-body">${adminAlertsBody()}</div>
+    </div>`;
   }
 
   function adminUsers() {
@@ -1215,8 +1407,8 @@
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
     const tab = params.get("aba") || "produtos";
     const newCount = adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : "…";
-    const tabs = { produtos: "Produtos", pedidos: "Pedidos", cadastros: "Cadastros", config: "Configurações" };
-    const body = { produtos: adminProducts, pedidos: adminOrders, cadastros: adminUsers, config: () => `<div class="box"><h2>Configurações</h2>
+    const tabs = { produtos: "Produtos", pedidos: "Pedidos", "avise-me": "Avise-me", cadastros: "Cadastros", config: "Configurações" };
+    const body = { produtos: adminProducts, pedidos: adminOrders, "avise-me": adminAlertsTab, cadastros: adminUsers, config: () => `<div class="box"><h2>Configurações</h2>
       <label class="field" style="max-width:320px">WhatsApp que recebe os pedidos<input value="${whatsapp}" disabled></label>
       <p class="notice">Na versão final esse número é editável aqui e fica salvo no banco.</p></div>` }[tab] || adminProducts;
     return `<div class="view container">
@@ -1226,9 +1418,10 @@
           <div class="kpi"><span>Produtos</span><strong>${products.length}</strong></div>
           <div class="kpi"><span>Sem estoque</span><strong>${products.filter((p) => p.stock <= 0).length}</strong></div>
           <a class="kpi kpi--link" href="#/admin?aba=pedidos"><span>Pedidos novos</span><strong id="kpi-new">${newCount}</strong></a>
+          <a class="kpi kpi--link" href="#/admin?aba=avise-me"><span>Avise-me aguardando</span><strong id="kpi-alerts">${adminAlerts ? pendingAlerts().length : "…"}</strong></a>
           <div class="kpi"><span>Cadastros</span><strong>${store.get("ts_users", []).length}</strong></div>
         </div>
-        <div class="admin-tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<a class="pill" role="tab" aria-selected="${tab === k}" href="#/admin?aba=${k}">${v}</a>`).join("")}</div>
+        <div class="admin-tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<a class="pill" role="tab" aria-selected="${tab === k}" href="#/admin?aba=${k}">${v}${k === "avise-me" ? `<span class="pill__n" id="tab-alerts-n">${pendingAlerts().length || ""}</span>` : ""}</a>`).join("")}</div>
         ${body()}
         <div><button class="btn btn--ghost" data-logout>Sair</button></div>
       </div>
@@ -1377,7 +1570,29 @@
       $("#signup-submit").innerHTML = d.tipo === "lojista" ? "Cadastrar minha loja" : "Criar minha conta";
       $("#signup-fields input").focus();
     }
-    else if (d.edit) { editingId = d.edit; pendingImage = null; router(); $("#product-form").scrollIntoView({ behavior: "smooth" }); }
+    else if (d.edit) {
+      editingId = d.edit; pendingImage = null;
+      const goForm = () => $("#product-form")?.scrollIntoView({ behavior: "smooth" });
+      if ("editTab" in d) { location.hash = "#/admin?aba=produtos"; setTimeout(goForm, 60); }
+      else { router(); goForm(); }
+    }
+    else if (d.alert) openAlert(d.alert);
+    else if (d.alertStatus) {
+      alertsApi.setStatus(d.alertStatus, d.to).then(() => {
+        const a = adminAlerts?.find((x) => x.id === d.alertStatus);
+        if (a) a.status = d.to;
+        rerenderAlerts();
+        toast(d.to === "NOTIFIED" ? "Marcado como avisado" : "Voltou para aguardando");
+      }).catch((err) => toast(err.message));
+    }
+    else if (d.alertDel) {
+      if (!confirm("Remover este pedido de aviso? Essa ação não pode ser desfeita.")) return;
+      alertsApi.remove(d.alertDel).then(() => {
+        adminAlerts = adminAlerts?.filter((x) => x.id !== d.alertDel);
+        rerenderAlerts();
+        toast("Aviso removido");
+      }).catch((err) => toast(err.message));
+    }
     else if ("cancelEdit" in d) { editingId = null; pendingImage = null; router(); }
     else if (d.del) {
       const p = prodBy(d.del);
@@ -1544,6 +1759,7 @@
         models: form.models.value.split(",").map((m) => m.trim()).filter(Boolean),
         image: pendingImage || existing?.image,
       };
+      const restocked = existing && existing.stock <= 0 && fields.stock > 0;
       if (existing) {
         Object.assign(existing, fields, { promo: existing.promo && existing.promo < fields.price ? existing.promo : null });
       } else {
@@ -1553,9 +1769,16 @@
         products.unshift({ id: slug, slug, ...fields, promo: null, featured: false, isNew: true, variants: null, createdAt: Date.now() });
       }
       if (!saveProducts()) { toast("Sem espaço no navegador para salvar a foto. Use uma imagem menor."); return; }
-      toast(existing ? "Produto atualizado" : "Produto cadastrado");
       editingId = null; pendingImage = null;
-      router();
+      const waiting = restocked ? pendingAlerts(existing.id).length : 0;
+      if (waiting) {
+        // repôs um produto que tinha gente esperando: leva direto para a aba de avisos
+        toast(`${waiting} ${waiting === 1 ? "pessoa pediu" : "pessoas pediram"} aviso deste produto. Avise agora!`);
+        location.hash = "#/admin?aba=avise-me";
+      } else {
+        toast(existing ? "Produto atualizado" : "Produto cadastrado");
+        router();
+      }
     }
   });
 

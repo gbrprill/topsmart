@@ -8,15 +8,12 @@
 // GET    /api/orders?since=N              admin lista pedidos (header x-admin-key)
 // PUT    /api/orders?code=TS-000001       admin muda o status (header x-admin-key)
 
-import { randomUUID, timingSafeEqual } from "node:crypto";
-
-const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-const ADMIN_KEY = process.env.ADMIN_KEY || "";
+import { randomUUID } from "node:crypto";
+import { hasRedis, redis, bumpVersion, VER_KEY, str, num, isAdmin } from "./_shared.js";
 
 const K = {
   seq: "ts:order_seq",
-  ver: "ts:orders_ver",
+  ver: VER_KEY,
   list: "ts:orders",
   order: (code) => `ts:order:${code}`,
 };
@@ -24,27 +21,7 @@ const STATUSES = ["NEW", "IN_PROGRESS", "DONE", "CANCELED"];
 const DELIVERY = ["retirada", "entrega"];
 const PAYMENT = ["credito", "debito", "pix", "dinheiro"];
 
-async function redis(...command) {
-  const r = await fetch(REDIS_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${REDIS_TOKEN}`, "Content-Type": "application/json" },
-    body: JSON.stringify(command),
-  });
-  const data = await r.json();
-  if (data.error) throw new Error(data.error);
-  return data.result;
-}
-
-const str = (v, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
-const num = (v) => (Number.isFinite(+v) ? Math.round(+v * 100) / 100 : 0);
 const publicOrder = ({ token, ...o }) => o;
-
-function isAdmin(req) {
-  const given = Buffer.from(String(req.headers["x-admin-key"] || ""));
-  const expected = Buffer.from(ADMIN_KEY);
-  return ADMIN_KEY.length > 0 && given.length === expected.length && timingSafeEqual(given, expected);
-}
-
 function cleanAddress(a) {
   if (!a || typeof a !== "object") return null;
   const out = {
@@ -60,12 +37,12 @@ async function getOrder(code) {
 }
 async function saveOrder(order) {
   await redis("SET", K.order(order.code), JSON.stringify(order));
-  return redis("INCR", K.ver);
+  return bumpVersion();
 }
 
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
-  if (!REDIS_URL || !REDIS_TOKEN) return res.status(503).json({ error: "Armazenamento de pedidos não configurado" });
+  if (!hasRedis()) return res.status(503).json({ error: "Armazenamento de pedidos não configurado" });
 
   try {
     const code = str(req.query.code, 20).toUpperCase();
