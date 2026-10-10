@@ -1090,7 +1090,7 @@
     </div>`;
   }
 
-  const statusLabel = { NEW: "Novo", IN_PROGRESS: "Em atendimento", DONE: "Concluído", CANCELED: "Cancelado" };
+  const statusLabel = { NEW: "Novo", IN_PROGRESS: "Em andamento", DONE: "Concluído", CANCELED: "Cancelado" };
   const fmtDate = (iso) => new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 
   function myOrdersHTML() {
@@ -1198,15 +1198,48 @@
     const filters = { todos: () => true, novos: (o) => o.status === "NEW", atendimento: (o) => o.status === "IN_PROGRESS", concluidos: (o) => o.status === "DONE" || o.status === "CANCELED" };
     const list = adminOrdersList.filter(filters[ordersFilter] || filters.todos);
     return `<div class="pills" role="group" aria-label="Filtrar pedidos">
-        ${[["todos", "Todos"], ["novos", "Novos"], ["atendimento", "Em atendimento"], ["concluidos", "Concluídos"]].map(([k, v]) =>
+        ${[["todos", "Todos"], ["novos", "Novos"], ["atendimento", "Em andamento"], ["concluidos", "Concluídos"]].map(([k, v]) =>
           `<button class="pill ${ordersFilter === k ? "is-active" : ""}" data-orders-filter="${k}">${v} <span class="pill__n">${adminOrdersList.filter(filters[k]).length}</span></button>`).join("")}
       </div>
-      ${list.length ? `<div class="tickets">${list.map((o) => receiptHTML(o, { admin: true })).join("")}</div>` : `<div class="empty">Nenhum pedido aqui.</div>`}`;
+      ${!list.length ? `<div class="empty">Nenhum pedido aqui.</div>`
+        : ordersView === "lista" ? `<div class="olist">${list.map(orderRowHTML).join("")}</div>`
+        : `<div class="tickets">${list.map((o) => receiptHTML(o, { admin: true })).join("")}</div>`}`;
+  }
+
+  // modo lista: linha compacta (pedido, cliente, valor) que abre o cupom completo
+  let ordersView = store.get("ts_orders_view", "cupom");
+  const expandedOrders = new Set();
+  function orderRowHTML(o) {
+    const c = o.customer, open = expandedOrders.has(o.code);
+    const who = c.type === "lojista" ? (o.checkout?.name || c.razao) : (o.checkout?.name || c.name);
+    const toggle = `data-order-toggle="${esc(o.code)}" aria-expanded="${open}" aria-controls="od-${esc(o.code)}"`;
+    return `<div class="orow ${open ? "is-open" : ""} ${o.status === "NEW" ? "orow--new" : ""}">
+      <div class="orow__head">
+        <button class="orow__main" ${toggle}>
+          <span class="orow__code">${esc(o.code)}</span>
+          <span class="orow__who"><b>${esc(who)}</b>${c.type === "lojista" ? '<span class="tag tag--pro">Lojista</span>' : ""}<small>${fmtDate(o.createdAt)}</small></span>
+        </button>
+        <select class="status status--${o.status} orow__status" data-status="${esc(o.code)}" aria-label="Status do pedido ${esc(o.code)}">${Object.entries(statusLabel).map(([s, v]) => `<option value="${s}" ${o.status === s ? "selected" : ""}>${v}</option>`).join("")}</select>
+        <button class="orow__end" ${toggle} aria-label="${open ? "Fechar" : "Abrir"} detalhes do pedido ${esc(o.code)}">
+          <span class="orow__total">${money(o.subtotal)}</span>
+          <span class="orow__chev">${icon("i-down")}</span>
+        </button>
+      </div>
+      ${open ? `<div class="orow__body" id="od-${esc(o.code)}">${receiptHTML(o, { admin: true })}</div>` : ""}
+    </div>`;
   }
 
   function adminOrders() {
     return `<div class="box">
-      <div class="box__head"><h2>Pedidos recebidos</h2><span class="muted live-dot">Atualiza sozinho a cada 15 s</span></div>
+      <div class="box__head"><h2>Pedidos recebidos</h2>
+        <div class="box__tools">
+          <span class="muted live-dot">Atualiza a cada 15 s</span>
+          <div class="view-toggle" role="group" aria-label="Ver pedidos como">
+            <button class="${ordersView === "cupom" ? "is-active" : ""}" data-orders-view="cupom" aria-pressed="${ordersView === "cupom"}">${icon("i-receipt")}Cupom</button>
+            <button class="${ordersView === "lista" ? "is-active" : ""}" data-orders-view="lista" aria-pressed="${ordersView === "lista"}">${icon("i-list")}Lista</button>
+          </div>
+        </div>
+      </div>
       <div id="notify-permission">${notifyPermissionHTML()}</div>
       <div id="admin-orders-body">${adminOrdersBody()}</div>
     </div>`;
@@ -1608,6 +1641,15 @@
     else if ("soon" in d) { e.preventDefault(); toast("Página institucional: conteúdo a definir com o cliente"); }
     else if ("logout" in d) { store.set("ts_session", null); store.set("ts_admin_key", ""); stopPolling(); toast("Você saiu da conta"); location.hash = "#/"; }
     else if (d.ordersFilter) { ordersFilter = d.ordersFilter; rerenderAdminOrders(); }
+    else if (d.ordersView) {
+      ordersView = d.ordersView; store.set("ts_orders_view", ordersView);
+      document.querySelectorAll("[data-orders-view]").forEach((b) => { b.classList.toggle("is-active", b === t); b.setAttribute("aria-pressed", b === t); });
+      rerenderAdminOrders();
+    }
+    else if (d.orderToggle) {
+      expandedOrders.has(d.orderToggle) ? expandedOrders.delete(d.orderToggle) : expandedOrders.add(d.orderToggle);
+      rerenderAdminOrders();
+    }
     else if ("enableNotify" in d) {
       Notification.requestPermission().then((p) => {
         $("#notify-permission").innerHTML = notifyPermissionHTML();
