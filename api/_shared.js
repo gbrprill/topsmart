@@ -20,7 +20,9 @@ export async function redis(...command) {
 }
 
 // contador único de mudanças: o painel do admin só baixa tudo de novo quando ele muda
-export const VER_KEY = "ts:orders_ver";
+// fora de produção (preview e vercel dev) pedidos e avise-me usam chaves separadas
+export const KP = process.env.VERCEL_ENV === "production" ? "ts:" : "ts:rev:";
+export const VER_KEY = `${KP}orders_ver`;
 export const bumpVersion = () => redis("INCR", VER_KEY);
 
 export const str = (v, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");

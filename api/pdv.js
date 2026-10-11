@@ -20,6 +20,7 @@
 
 import { randomUUID } from "node:crypto";
 import { hasRedis, redis, str, num, isAdmin } from "./_shared.js";
+import { avaliarCupom, consumirCupom, liberarCupom, chaveCliente } from "./_cupons.js";
 
 // a versão de revisão (preview) usa chaves separadas para não misturar com a produção
 const P = process.env.VERCEL_ENV === "production" ? "ts:pdv:" : "ts:pdvrev:";
@@ -174,6 +175,7 @@ export default async function handler(req, res) {
       venda.status = "CANCELADA"; venda.canceladaEm = new Date().toISOString(); venda.motivoCancelamento = str(b.motivo, 120);
       // desfaz o crédito na loja que essa venda gerou ou consumiu
       if (venda.creditoMov && venda.cliente?.id) await moverCredito(venda.cliente.id, -venda.creditoMov, `Cancelamento ${venda.code}`, venda.code, true);
+      if (venda.cupom) await liberarCupom(venda.cupom.code, venda.cupom.clienteKey);
       await setJSON(K.venda(venda.code), venda);
       return res.status(200).json({ venda });
     }
@@ -207,7 +209,15 @@ export default async function handler(req, res) {
       const levado = num(itens.reduce((s, it) => s + it.sub, 0));
       const voltou = num(devolvidos.reduce((s, it) => s + it.sub, 0));
       const diferenca = tipo === "troca" ? num(levado - voltou) : null;
-      const total = tipo === "troca" ? Math.abs(diferenca) : levado;
+      // cupom de desconto: só em venda; o servidor confere e calcula
+      let cupom = null;
+      if (tipo === "venda" && b.cupom) {
+        const cli0 = b.cliente || {};
+        const av = await avaliarCupom(b.cupom, { itens, subtotal: levado, canal: "balcao", tipoCliente: cli0.tipo, clienteKey: chaveCliente(cli0) });
+        if (!av.ok) return res.status(400).json({ error: `Cupom: ${av.error}` });
+        cupom = { code: av.cupom.code, desconto: av.desconto, descricao: av.descricao, cupomObj: av.cupom, clienteKey: chaveCliente(cli0) };
+      }
+      const total = tipo === "troca" ? Math.abs(diferenca) : num(levado - (cupom?.desconto || 0));
 
       const pagamentos = (Array.isArray(b.pagamentos) ? b.pagamentos : []).slice(0, 6)
         .map((p) => ({ forma: FORMAS.includes(p.forma) ? p.forma : null, valor: Math.max(0, num(p.valor)) }))
@@ -242,6 +252,13 @@ export default async function handler(req, res) {
         if (creditoMov < 0 && (cad.credito || 0) + 0.001 < usoCredito) return res.status(400).json({ error: `${cad.nome} tem só ${num(cad.credito || 0).toFixed(2).replace(".", ",")} de crédito` });
       }
 
+      if (cupom) {
+        const uso = await consumirCupom(cupom.cupomObj, cupom.clienteKey);
+        if (!uso.ok) {
+          return res.status(400).json({ error: `Cupom: ${uso.error}` });
+        }
+        delete cupom.cupomObj;
+      }
       const seq = await redis("INCR", K.seq);
       const venda = {
         code: `${{ devolucao: "DV", troca: "TR", venda: "VB" }[tipo]}-${String(seq).padStart(6, "0")}`,
@@ -249,6 +266,7 @@ export default async function handler(req, res) {
         caixaId, vendedor: { id: vendedor.id, nome: vendedor.nome }, cliente, itens, total, pagamentos, troco, obs: str(b.obs, 300),
         ...(tipo === "troca" ? { devolvidos, diferenca, levado, voltou } : {}),
         ...(creditoMov ? { creditoMov } : {}),
+        ...(cupom ? { cupom, subtotal: levado } : {}),
       };
       if (creditoMov) venda.creditoSaldo = await moverCredito(cliente.id, creditoMov, devolvendoDinheiro ? `Crédito gerado na ${tipo}` : "Usado na compra", venda.code);
       await setJSON(K.venda(venda.code), venda);

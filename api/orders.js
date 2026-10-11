@@ -9,19 +9,20 @@
 // PUT    /api/orders?code=TS-000001       admin muda o status (Authorization: Bearer <sessão do admin>)
 
 import { randomUUID } from "node:crypto";
-import { hasRedis, redis, bumpVersion, VER_KEY, str, num, isAdmin, rateLimit } from "./_shared.js";
+import { hasRedis, redis, bumpVersion, VER_KEY, KP, str, num, isAdmin, rateLimit } from "./_shared.js";
+import { avaliarCupom, consumirCupom, liberarCupom, chaveCliente } from "./_cupons.js";
 
 const K = {
-  seq: "ts:order_seq",
+  seq: `${KP}order_seq`,
   ver: VER_KEY,
-  list: "ts:orders",
-  order: (code) => `ts:order:${code}`,
+  list: `${KP}orders`,
+  order: (code) => `${KP}order:${code}`,
 };
 const STATUSES = ["NEW", "IN_PROGRESS", "DONE", "CANCELED"];
 const DELIVERY = ["retirada", "entrega"];
 const PAYMENT = ["credito", "debito", "pix", "dinheiro"];
 
-const publicOrder = ({ token, ...o }) => o;
+const publicOrder = ({ token, ...o }) => (o.cupom ? { ...o, cupom: { code: o.cupom.code, desconto: o.cupom.desconto, descricao: o.cupom.descricao } } : o);
 function cleanAddress(a) {
   if (!a || typeof a !== "object") return null;
   const out = {
@@ -53,7 +54,7 @@ export default async function handler(req, res) {
       if (!(await rateLimit(req, "order", 10, 3600))) return res.status(429).json({ error: "Muitos pedidos seguidos. Tente de novo mais tarde ou chame no WhatsApp." });
       const b = req.body || {};
       const items = Array.isArray(b.items) ? b.items.slice(0, 100).map((it) => ({
-        name: str(it.name, 160), variant: str(it.variant, 60) || null,
+        productId: str(it.productId, 120) || null, name: str(it.name, 160), variant: str(it.variant, 60) || null,
         qty: Math.max(1, Math.min(999, parseInt(it.qty, 10) || 1)), unit: Math.max(0, Math.min(1e6, num(it.unit))),
       })).filter((it) => it.name) : [];
       if (!items.length) return res.status(400).json({ error: "Carrinho vazio" });
@@ -66,6 +67,17 @@ export default async function handler(req, res) {
       };
       if (!customer.name && !customer.razao) return res.status(400).json({ error: "Cliente sem nome" });
 
+      // cupom de desconto: o servidor confere e calcula; o navegador só informa o código
+      const subtotal = num(items.reduce((s, it) => s + it.sub, 0));
+      let cupom = null;
+      if (b.cupom) {
+        const av = await avaliarCupom(b.cupom, { itens: items, subtotal, canal: "site", tipoCliente: customer.type, clienteKey: chaveCliente(customer) });
+        if (!av.ok) return res.status(400).json({ error: `Cupom: ${av.error}` });
+        const uso = await consumirCupom(av.cupom, chaveCliente(customer));
+        if (!uso.ok) return res.status(400).json({ error: `Cupom: ${uso.error}` });
+        cupom = { code: av.cupom.code, desconto: av.desconto, descricao: av.descricao, clienteKey: chaveCliente(customer) };
+      }
+
       const seq = await redis("INCR", K.seq);
       const order = {
         code: `TS-${String(seq).padStart(6, "0")}`,
@@ -75,7 +87,9 @@ export default async function handler(req, res) {
         stage: "PENDING", // gerado, aguardando o cliente confirmar entrega e pagamento
         customer,
         items,
-        subtotal: num(items.reduce((s, it) => s + it.sub, 0)),
+        subtotal,
+        cupom,
+        total: num(subtotal - (cupom?.desconto || 0)),
         checkout: null,
         token: randomUUID(),
       };
@@ -109,6 +123,8 @@ export default async function handler(req, res) {
       if (!order) return res.status(404).json({ error: "Pedido não encontrado" });
       const status = (req.body || {}).status;
       if (!STATUSES.includes(status)) return res.status(400).json({ error: "Status inválido" });
+      // pedido cancelado devolve o uso do cupom
+      if (status === "CANCELED" && order.status !== "CANCELED" && order.cupom) await liberarCupom(order.cupom.code, order.cupom.clienteKey);
       order.status = status;
       const ver = await saveOrder(order);
       return res.status(200).json({ order: publicOrder(order), ver });

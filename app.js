@@ -136,6 +136,48 @@
   }).filter(Boolean);
   const cartCount = () => cartLines().reduce((s, l) => s + l.qty, 0);
   const cartTotal = () => cartLines().reduce((s, l) => s + l.sub, 0);
+
+  // ---------- cupom de desconto (o servidor confere e calcula; aqui só mostra) ----------
+  let cupom = store.get("ts_cupom", null); // { ok, code, desconto, descricao, base } ou { ok:false, code, error }
+  let cupomChecando = false;
+  const cartKey = () => `${cartLines().map((l) => `${l.id}:${l.variant}:${l.qty}:${l.unit}`).join("|")}#${session()?.type || ""}`;
+  const descontoCupom = () => (cupom?.ok && cupom.base === cartKey() ? cupom.desconto : 0);
+  const totalComCupom = () => Math.max(0, cartTotal() - descontoCupom());
+  async function aplicarCupom(codeRaw) {
+    const code = String(codeRaw || "").toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+    if (!code) return;
+    if (!location.protocol.startsWith("http")) { cupom = { ok: false, code, error: "Cupom só funciona no site publicado" }; return syncCartUI(); }
+    cupomChecando = true; syncCartUI();
+    try {
+      const r = await fetch("/api/coupons", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, canal: "site", tipo: session()?.type === "lojista" ? "lojista" : "cliente", itens: cartLines().map((l) => ({ productId: l.id, qty: l.qty, sub: l.sub })) }),
+      });
+      const d = await r.json();
+      cupom = d.ok ? { ok: true, code: d.code, desconto: d.desconto, descricao: d.descricao, itensNaPromo: d.itensNaPromo, base: cartKey() } : { ok: false, code, error: d.error || "Cupom inválido" };
+    } catch { cupom = { ok: false, code, error: "Não foi possível conferir o cupom agora" }; }
+    cupomChecando = false;
+    store.set("ts_cupom", cupom);
+    syncCartUI();
+  }
+  function cupomHTML() {
+    if (!canSeePrice() || !cart.length) return "";
+    if (cupomChecando) return `<div class="cupom cupom--load">${icon("i-tag")}Conferindo cupom…</div>`;
+    if (cupom?.ok && cupom.base === cartKey()) {
+      return `<div class="cupom cupom--ok">${icon("i-tag")}<span><b>${esc(cupom.code)}</b><small>${esc(cupom.descricao)}</small></span><button class="text-btn" data-cupom-remove aria-label="Remover cupom">Remover</button></div>`;
+    }
+    return `<form class="cupom-form" data-cupom-form novalidate>
+      <input name="cupom" value="${esc(cupom && !cupom.ok ? cupom.code : "")}" placeholder="Cupom de desconto" aria-label="Cupom de desconto" autocomplete="off" autocapitalize="characters" maxlength="24">
+      <button class="btn btn--ghost btn--sm">Aplicar</button>
+      ${cupom && !cupom.ok ? `<span class="cupom-err">${esc(cupom.error)}</span>` : ""}
+    </form>`;
+  }
+  const totaisHTML = () => {
+    const d = descontoCupom();
+    return `${d ? `<div class="total-line total-line--sub"><span>Subtotal</span><span>${money(cartTotal())}</span></div>
+      <div class="total-line total-line--desc"><span>Cupom ${esc(cupom.code)}</span><span>-${money(d)}</span></div>` : ""}
+      <div class="total-line"><span>Total</span><strong>${money(totalComCupom())}</strong></div>`;
+  };
   function saveCart() { store.set("ts_cart", cart); syncCartUI(); }
   function addToCart(id, variant = null, qty = 1) {
     const p = prodBy(id);
@@ -195,7 +237,9 @@
     const hideBar = ["#/carrinho", "#/login", "#/cadastro", "#/admin"].includes(route) || route.startsWith("#/pedido");
     $("#cartbar").hidden = !count || hideBar;
     $("#cartbar-count").textContent = count;
-    $("#cartbar-total").textContent = money(total);
+    $("#cartbar-total").textContent = money(Math.max(0, total - descontoCupom()));
+    // carrinho mudou depois de aplicar o cupom: confere de novo (o desconto depende dos itens)
+    if (cupom?.ok && cupom.base !== cartKey() && !cupomChecando && cart.length && canSeePrice()) setTimeout(() => aplicarCupom(cupom.code), 0);
     $("#cartbar-total").hidden = !canSeePrice();
 
     const lines = cartLines();
@@ -203,7 +247,8 @@
       ? lines.map(cartItemHTML).join("")
       : `<div class="empty" style="margin-top:24px">Seu carrinho está vazio.<br><a class="link-arrow" href="#/catalogo" style="margin-top:12px">Ver catálogo ${icon("i-arrow")}</a></div>`;
     $("#drawer-foot").innerHTML = !lines.length ? "" : canSeePrice() ? `
-      <div class="total-line"><span>Total</span><strong>${money(total)}</strong></div>
+      ${cupomHTML()}
+      ${totaisHTML()}
       <button class="btn btn--wa btn--block" data-send>${icon("i-check")}Fechar pedido</button>
       <a class="btn btn--ghost btn--block" href="#/carrinho">Ver carrinho completo</a>` : lockedCartHTML();
 
@@ -404,6 +449,7 @@
       items,
       "",
       `Subtotal: *${money(o.subtotal)}*`,
+      ...(o.cupom ? [`Cupom ${o.cupom.code}: *-${money(o.cupom.desconto)}*`, `Total: *${money(o.total)}*`] : []),
       `Forma de pagamento: ${PAYMENT_LABEL[k.payment] || "—"}`,
       "",
       `Entrega: ${deliveryText(o)}`,
@@ -421,7 +467,8 @@
     if (out.length) { toast(`${fullName(out[0].p)} esgotou. Remova do carrinho ou toque em Avise-me.`); openDrawer(); return; }
     const lines = cartLines();
     $("#confirm-list").innerHTML = lines.map((l) => `<div class="total-line"><span>${l.qty}x ${esc(fullName(l.p))}${l.variant ? ` <small class="muted">(${esc(l.variant)})</small>` : ""}</span><span>${money(l.sub)}</span></div>`).join("")
-      + `<div class="total-line confirm-total"><span>Subtotal</span><strong>${money(cartTotal())}</strong></div>`;
+      + (descontoCupom() ? `<div class="total-line confirm-total"><span>Subtotal</span><span>${money(cartTotal())}</span></div><div class="total-line"><span>Cupom ${esc(cupom.code)}</span><span class="pos">-${money(descontoCupom())}</span></div><div class="total-line"><span>Total</span><strong>${money(totalComCupom())}</strong></div>`
+        : `<div class="total-line confirm-total"><span>Subtotal</span><strong>${money(cartTotal())}</strong></div>`);
     $("#confirm-yes").disabled = false;
     $("#confirm-yes").textContent = "Sim, fechar pedido";
     $("#confirm-modal").showModal();
@@ -434,7 +481,8 @@
     btn.disabled = true; btn.textContent = "Gerando pedido…";
     const s = session();
     const payload = {
-      items: cartLines().map((l) => ({ name: fullName(l.p), variant: l.variant, qty: l.qty, unit: l.unit })),
+      items: cartLines().map((l) => ({ productId: l.id, name: fullName(l.p), variant: l.variant, qty: l.qty, unit: l.unit })),
+      cupom: descontoCupom() ? cupom.code : undefined,
       customer: {
         type: s.type === "lojista" ? "lojista" : "cliente",
         name: s.type === "lojista" ? s.responsavel : s.name, razao: s.razao || "",
@@ -444,6 +492,7 @@
     try {
       const { order, token } = await ordersApi.create(payload);
       saveMyOrder(order, token);
+      cupom = null; store.set("ts_cupom", null);
       cart = []; saveCart();
       $("#confirm-modal").close();
       toast(`Pedido ${order.code} gerado!`);
@@ -908,7 +957,7 @@
           <h2>Resumo</h2>
           ${lines.map((l) => `<div class="total-line" style="font-size:14px"><span>${l.qty}x ${esc(fullName(l.p))}</span><span>${canSeePrice() ? money(l.sub) : ""}</span></div>`).join("")}
           <hr style="border:0;border-top:1px solid var(--border);width:100%">
-          ${canSeePrice() ? `<div class="total-line"><span>Total</span><strong>${money(cartTotal())}</strong></div>
+          ${canSeePrice() ? `${cupomHTML()}${totaisHTML()}
           <button class="btn btn--wa btn--block" data-send>${icon("i-check")}Fechar pedido</button>` : lockedCartHTML()}
           <p class="note">Sem pagamento online. A loja confirma disponibilidade e forma de pagamento pelo WhatsApp.</p>
           <button class="text-btn" data-clear-cart>Limpar carrinho</button>
@@ -942,7 +991,8 @@
         <div class="rc__item"><span><b>${it.qty}x</b> ${esc(it.name)}${it.variant ? ` (${esc(it.variant)})` : ""}</span><span>${money(it.sub)}</span></div>`).join("")}
       </div>
       <div class="rc__cut"></div>
-      <div class="rc__total"><span>SUBTOTAL</span><span>${money(o.subtotal)}</span></div>
+      ${o.cupom ? `${row("Subtotal", money(o.subtotal))}${row(`Cupom ${esc(o.cupom.code)}`, `-${money(o.cupom.desconto)}`)}` : ""}
+      <div class="rc__total"><span>${o.cupom ? "TOTAL" : "SUBTOTAL"}</span><span>${money(o.total ?? o.subtotal)}</span></div>
       <div class="rc__cut"></div>
       ${row("Pagamento", esc(PAYMENT_LABEL[k?.payment] || "a definir"))}
       ${row("Entrega", k ? (k.delivery === "entrega" ? "Entregar no endereço" : "Retirar na loja") : "a definir")}
@@ -1104,7 +1154,7 @@
     const orders = myOrders().filter((o) => o.owner === s?.email);
     if (!orders.length) return `<p class="muted">Você ainda não fez pedidos.</p>`;
     return `<div class="table-wrap"><table><thead><tr><th>Pedido</th><th>Data</th><th>Itens</th><th>Subtotal</th><th>Situação</th><th>Status</th></tr></thead><tbody>
-      ${orders.map((o) => `<tr><td><a href="#/pedido/${o.code}" class="link-arrow">${o.code}</a></td><td>${fmtDate(o.createdAt)}</td><td>${o.items.reduce((n, it) => n + it.qty, 0)}</td><td>${money(o.subtotal)}</td>
+      ${orders.map((o) => `<tr><td><a href="#/pedido/${o.code}" class="link-arrow">${o.code}</a></td><td>${fmtDate(o.createdAt)}</td><td>${o.items.reduce((n, it) => n + it.qty, 0)}</td><td>${money(o.total ?? o.subtotal)}</td>
         <td>${o.stage === "PENDING" ? `<button class="text-btn" data-complete="${esc(o.code)}">Completar e enviar</button>` : STAGE_LABEL[o.stage]}</td>
         <td><span class="status status--${o.status}">${statusLabel[o.status]}</span></td></tr>`).join("")}
     </tbody></table></div>`;
@@ -1228,7 +1278,7 @@
         </button>
         <select class="status status--${o.status} orow__status" data-status="${esc(o.code)}" aria-label="Status do pedido ${esc(o.code)}">${Object.entries(statusLabel).map(([s, v]) => `<option value="${s}" ${o.status === s ? "selected" : ""}>${v}</option>`).join("")}</select>
         <button class="orow__end" ${toggle} aria-label="${open ? "Fechar" : "Abrir"} detalhes do pedido ${esc(o.code)}">
-          <span class="orow__total">${money(o.subtotal)}</span>
+          <span class="orow__total">${money(o.total ?? o.subtotal)}</span>
           <span class="orow__chev">${icon("i-down")}</span>
         </button>
       </div>
@@ -1284,7 +1334,7 @@
     const qty = o.items.reduce((n, it) => n + it.qty, 0);
     const title = kind === "new" ? `Novo pedido ${o.code}` : `Pedido ${o.code} confirmado`;
     const body = kind === "new"
-      ? `${who} · ${qty} ${qty === 1 ? "item" : "itens"} · ${money(o.subtotal)}`
+      ? `${who} · ${qty} ${qty === 1 ? "item" : "itens"} · ${money(o.total ?? o.subtotal)}${o.cupom ? ` (cupom ${o.cupom.code})` : ""}`
       : `${who} · ${PAYMENT_LABEL[o.checkout?.payment] || ""} · ${o.checkout?.delivery === "entrega" ? "Entrega" : "Retirada na loja"}`;
 
     showNotify({ label: kind === "new" ? "Pedido novo" : "Cliente confirmou", title, body, href: "#/admin?aba=pedidos", cta: "Ver pedido", tag: `${o.code}-${kind}` });
@@ -1462,7 +1512,7 @@
       <p class="notice">Na versão final esse número é editável aqui e fica salvo no banco.</p></div>`;
     const body = { produtos: adminProducts, pedidos: adminOrders, "avise-me": adminAlertsTab, cadastros: adminUsers, config, ...ext }[tab] || adminProducts;
     const groups = [
-      ["Vendas", [["inicio", "Início", "i-home"], ["balcao", "Venda balcão", "i-store"], ["pedidos", "Pedidos do site", "i-bag"], ["avise-me", "Avise-me", "i-bell"]]],
+      ["Vendas", [["inicio", "Início", "i-home"], ["balcao", "Venda balcão", "i-store"], ["pedidos", "Pedidos do site", "i-bag"], ["avise-me", "Avise-me", "i-bell"], ["cupons", "Cupons", "i-tag"]]],
       ["Financeiro", [["caixa", "Caixa", "i-cash"], ["entrada", "Entrada de estoque", "i-download"], ["relatorios", "Relatórios", "i-chart"]]],
       ["Cadastros", [["produtos", "Produtos", "i-tag"], ["clientes", "Clientes", "i-user"], ["fornecedores", "Fornecedores", "i-truck"], ["equipe", "Lojas e vendedores", "i-users"]]],
       ["Sistema", [["config", "Configurações", "i-gear"]]],
@@ -1473,7 +1523,7 @@
       <nav class="side" aria-label="Painel">
         <div class="side__who"><strong>${esc(s.name)}</strong><button class="text-btn" data-logout>Sair</button></div>
         ${groups.map(([g, items]) => `<div class="side__group"><span class="side__label">${g}</span>
-          ${items.filter(([k]) => k in ext || !["inicio", "balcao", "caixa", "relatorios", "equipe", "clientes", "fornecedores", "entrada"].includes(k)).map(([k, v, ic]) =>
+          ${items.filter(([k]) => k in ext || !["inicio", "balcao", "caixa", "relatorios", "equipe", "clientes", "fornecedores", "entrada", "cupons"].includes(k)).map(([k, v, ic]) =>
             `<a class="side__link ${tab === k ? "is-active" : ""}" href="#/admin?aba=${k}" ${tab === k ? 'aria-current="page"' : ""}>${icon(ic)}<span>${v}</span>${badge(k)}</a>`).join("")}
         </div>`).join("")}
       </nav>
@@ -1595,6 +1645,7 @@
     else if (d.qty) { const l = cart.find((x) => lineKey(x.id, x.variant) === d.qty); if (l) setQty(d.qty, l.qty + +d.d); }
     else if (d.remove) setQty(d.remove, 0);
     else if ("send" in d) startCheckout();
+    else if ("cupomRemove" in d) { cupom = null; store.set("ts_cupom", null); syncCartUI(); }
     else if ("clearCart" in d) { cart = []; saveCart(); toast("Carrinho limpo"); router(); }
     else if (d.filter && t.tagName === "BUTTON") setFilter(d.filter, d.value);
     else if ("clear" in d) location.hash = location.hash.split("?")[0];
@@ -1736,6 +1787,7 @@
 
   document.addEventListener("submit", async (e) => {
     const form = e.target;
+    if (form.dataset.cupomForm !== undefined) { e.preventDefault(); return aplicarCupom(form.cupom.value); }
     if (form.id === "search-form") {
       e.preventDefault();
       const q = $("#search-input").value.trim();

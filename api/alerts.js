@@ -6,10 +6,10 @@
 // DELETE /api/alerts?id=...        admin remove o pedido de aviso (Authorization: Bearer <sessão do admin>)
 
 import { randomUUID } from "node:crypto";
-import { hasRedis, redis, bumpVersion, str, isAdmin, rateLimit } from "./_shared.js";
+import { hasRedis, redis, bumpVersion, str, isAdmin, rateLimit, KP } from "./_shared.js";
 
-const LIST = "ts:alerts";
-const key = (id) => `ts:alert:${id}`;
+const LIST = `${KP}alerts`;
+const key = (id) => `${KP}alert:${id}`;
 const CHANNELS = ["email", "whatsapp"];
 
 export default async function handler(req, res) {

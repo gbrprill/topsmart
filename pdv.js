@@ -174,7 +174,10 @@
   const soma = (lista) => r2(lista.reduce((s, it) => s + subItem(it), 0));
   const totalDescontos = () => sale.itens.reduce((s, it) => s + (it.desconto || 0), 0);
   // positivo: o cliente paga; negativo: a loja devolve dinheiro ao cliente
-  const saldo = () => sale.tipo === "troca" ? r2(soma(sale.itens) - soma(sale.devolvidos)) : sale.tipo === "devolucao" ? -soma(sale.itens) : soma(sale.itens);
+  // cupom só vale em venda e só enquanto os itens forem os mesmos que o servidor conferiu
+  const cupomKey = () => `${sale.itens.map((it) => `${it.productId}:${it.qty}:${it.unit}:${it.desconto || 0}`).join("|")}#${sale.cliente?.tipo || ""}`;
+  const descCupom = () => (sale.tipo === "venda" && sale.cupom?.ok && sale.cupom.base === cupomKey() ? sale.cupom.desconto : 0);
+  const saldo = () => sale.tipo === "troca" ? r2(soma(sale.itens) - soma(sale.devolvidos)) : sale.tipo === "devolucao" ? -soma(sale.itens) : r2(soma(sale.itens) - descCupom());
   const aPagar = () => Math.abs(saldo());
   const devolvendo = () => saldo() < 0;
   const totalPago = () => sale.pagamentos.reduce((s, p) => s + (p.valor || 0), 0);
@@ -231,6 +234,7 @@
       return;
     }
     if (sale.vendedorId && !vendedoresDaLoja().some((v) => v.id === sale.vendedorId)) sale.vendedorId = "";
+    if (sale.cupom?.ok && sale.cupom.base !== cupomKey() && !cupomPdvLoad && sale.itens.length && sale.tipo === "venda") setTimeout(() => aplicarCupomPdv(sale.cupom.code), 0);
     const tipo = sale.tipo;
     const modos = [["venda", "Venda", ""], ["troca", "Troca", "i-swap"], ["devolucao", "Devolução", "i-undo"]];
     let corpo;
@@ -297,6 +301,24 @@
       <button type="button" class="text-btn cli-new" data-cli-new>${icon("i-plus")}Cadastrar cliente novo</button>`;
   }
 
+  let cupomPdvLoad = false;
+  function cupomPdvHTML() {
+    const cp = sale.cupom;
+    if (cupomPdvLoad) return `<div class="cupom cupom--load">${icon("i-tag")}Conferindo cupom…</div>`;
+    if (cp?.ok && cp.base === cupomKey()) return `<div class="cupom cupom--ok">${icon("i-tag")}<span><b>${esc(cp.code)}</b><small>${esc(cp.descricao)}</small></span><button class="text-btn" data-pdv-cupom-del>Remover</button></div>`;
+    return `<form class="cupom-form" id="pdv-cupom" novalidate><input name="cupom" value="${esc(cp && !cp.ok ? cp.code : "")}" placeholder="Cupom de desconto" aria-label="Cupom de desconto" autocomplete="off" maxlength="24"><button class="btn btn--ghost btn--sm">Aplicar</button>${cp && !cp.ok ? `<span class="cupom-err">${esc(cp.error)}</span>` : ""}</form>`;
+  }
+  async function aplicarCupomPdv(codeRaw) {
+    const code = String(codeRaw || "").toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+    if (!code) return;
+    cupomPdvLoad = true; renderPdv();
+    try {
+      const d = await T().fetchJSON("/api/coupons", "POST", { code, canal: "balcao", tipo: sale.cliente?.tipo === "lojista" ? "lojista" : "cliente", itens: sale.itens.map((it) => ({ productId: it.productId, qty: it.qty, sub: subItem(it) })) });
+      sale.cupom = d.ok ? { ok: true, code: d.code, desconto: d.desconto, descricao: d.descricao, base: cupomKey() } : { ok: false, code, error: d.error };
+    } catch (err) { sale.cupom = { ok: false, code, error: err.message }; }
+    cupomPdvLoad = false; saveSale(); renderPdv();
+  }
+
   function resumoVendaHTML() {
     const vend = vendedoresDaLoja();
     const tipo = sale.tipo, s = saldo();
@@ -311,6 +333,7 @@
       totais = `
         <div><dt>Itens</dt><dd class="num">${sale.itens.reduce((n, it) => n + it.qty, 0)}</dd></div>
         ${totalDescontos() && tipo === "venda" ? `<div><dt>Descontos</dt><dd class="num">-${money(totalDescontos())}</dd></div>` : ""}
+        ${descCupom() ? `<div><dt>Cupom ${esc(sale.cupom.code)}</dt><dd class="num pos">-${money(descCupom())}</dd></div>` : ""}
         <div class="totals__main"><dt>${tipo === "devolucao" ? "Total a devolver" : "Total"}</dt><dd class="num">${money(aPagar())}</dd></div>`;
       botao = tipo === "devolucao" ? "Devolver valor" : "Ir para o pagamento";
     }
@@ -324,6 +347,7 @@
               <a class="text-btn" href="#/admin?aba=equipe">Gerenciar lojas e vendedores</a>
             </form>`}
       </div>
+      ${tipo === "venda" && sale.itens.length ? cupomPdvHTML() : ""}
       <dl class="totals">${totais}</dl>
       <button class="btn ${tipo === "venda" ? "btn--primary" : "btn--dark"} btn--block" data-pdv-pagar ${prontoParaPagar() ? "" : "disabled"}>${botao}<kbd>F9</kbd></button>
       ${sale.itens.length || sale.devolvidos.length ? `<div class="pdv__side-actions">${tipo === "venda" ? `<button class="text-btn" data-pdv-hold>${icon("i-pause")}Deixar em espera</button>` : "<span></span>"}<button class="text-btn" data-pdv-clear>Limpar</button></div>` : ""}`;
@@ -484,6 +508,7 @@
         lojaId: lojaId(), tipo: sale.tipo, vendedorId: sale.vendedorId, cliente: sale.cliente, obs: sale.obs,
         itens: limpa(sale.itens), devolvidos: limpa(sale.devolvidos),
         pagamentos: aPagar() ? sale.pagamentos : [],
+        cupom: descCupom() ? sale.cupom.code : undefined,
       });
       // estoque local: o que sai baixa; o que volta bom entra; com defeito não volta ao estoque
       const mexe = (it, delta) => { const p = T().prodBy(it.productId); if (p) p.stock = Math.max(0, p.stock + delta); };
@@ -529,7 +554,9 @@
       L.push({ l: v.diferenca > 0 ? "CLIENTE PAGOU" : v.diferenca < 0 ? "DEVOLVIDO AO CLIENTE" : "SEM DIFERENÇA", r: money(Math.abs(v.diferenca)), b: 1, s: 1.15 }, { sep: 1 });
     } else {
       bloco(v.itens, v.tipo === "devolucao");
-      L.push({ sep: 1 }, { l: v.tipo === "devolucao" ? "TOTAL DEVOLVIDO" : "TOTAL", r: money(v.total), b: 1, s: 1.2 }, { sep: 1 });
+      L.push({ sep: 1 });
+      if (v.cupom) L.push({ l: "Subtotal", r: money(v.subtotal) }, { l: `Cupom ${v.cupom.code}`, r: `-${money(v.cupom.desconto)}` });
+      L.push({ l: v.tipo === "devolucao" ? "TOTAL DEVOLVIDO" : "TOTAL", r: money(v.total), b: 1, s: 1.2 }, { sep: 1 });
     }
     v.pagamentos.forEach((p) => L.push({ l: FORMAS[p.forma], r: money(p.recebido ?? p.valor) }));
     if (v.troco) L.push({ l: "Troco", r: money(v.troco) });
@@ -552,7 +579,7 @@
     const corpo = v.tipo === "troca"
       ? ["Devolveu:", ...v.devolvidos.map((it) => item(it, true)), "", "Levou:", ...v.itens.map((it) => item(it)), "",
         v.diferenca > 0 ? `Diferença paga: *${money(v.diferenca)}*` : v.diferenca < 0 ? `Devolvido ao cliente: *${money(-v.diferenca)}*` : "Troca sem diferença de valor"]
-      : [...v.itens.map((it) => item(it, v.tipo === "devolucao")), "", `${v.tipo === "devolucao" ? "Total devolvido" : "Total"}: *${money(v.total)}*`];
+      : [...v.itens.map((it) => item(it, v.tipo === "devolucao")), "", ...(v.cupom ? [`Cupom ${v.cupom.code}: -${money(v.cupom.desconto)}`] : []), `${v.tipo === "devolucao" ? "Total devolvido" : "Total"}: *${money(v.total)}*`];
     return [
       `*${TITULO[v.tipo] || "VENDA"} ${v.code}*`, `${v.lojaNome} · ${new Date(v.criadaEm).toLocaleDateString("pt-BR")} ${hora(v.criadaEm)}`, "",
       `Cliente: ${v.cliente?.nome || "Ao consumidor"}`, `Vendedor: ${v.vendedor.nome}`, "",
@@ -817,7 +844,7 @@
   let relatorio = null;
   function montarRelatorio(vendas) {
     const prods = {}, formas = {}, vends = {};
-    let qtd = 0, custo = 0, fat = 0, perdas = 0;
+    let qtd = 0, custo = 0, fat = 0, perdas = 0, cupons = 0;
     // sai: venda e o que o cliente levou na troca. volta: devolução e o que o cliente trouxe na troca.
     // o que volta bom recupera o custo (volta ao estoque); com defeito, o custo vira perda.
     const conta = (it, sinal) => {
@@ -832,6 +859,7 @@
       if (v.tipo === "devolucao") v.itens.forEach((it) => conta(it, -1));
       else v.itens.forEach((it) => conta(it, 1));
       (v.devolvidos || []).forEach((it) => conta(it, -1));
+      if (v.cupom) { cupons += v.cupom.desconto; fat -= v.cupom.desconto; }
       const s = v.tipo === "devolucao" || (v.tipo === "troca" && v.diferenca < 0) ? -1 : 1;
       v.pagamentos.forEach((pg) => (formas[pg.forma] = (formas[pg.forma] || 0) + s * pg.valor));
       const vd = (vends[v.vendedor.nome] ||= { nome: v.vendedor.nome, vendas: 0, valor: 0 });
@@ -839,7 +867,7 @@
       vd.valor += s * v.total;
     }
     const lista = Object.values(prods).map((p) => ({ ...p, lucro: p.valor - p.custo, medio: p.qtd ? p.custo / p.qtd : 0 })).sort((a, b) => b.valor - a.valor);
-    return { vendas, lista, formas, vends: Object.values(vends).sort((a, b) => b.valor - a.valor), qtd, custo, fat, lucro: fat - custo, perdas };
+    return { vendas, lista, formas, vends: Object.values(vends).sort((a, b) => b.valor - a.valor), qtd, custo, fat, lucro: fat - custo, perdas, cupons };
   }
   function relatorioHTML(R, vis) {
     const margem = R.fat ? (R.lucro / R.fat) * 100 : 0;
@@ -864,6 +892,7 @@
         ${R.vendas.length ? `
         <div class="rep__tabs no-print" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" aria-selected="${vis === k}" class="${vis === k ? "is-on" : ""}" data-rep-vis="${k}">${v}</button>`).join("")}</div>
         <div class="table-wrap">${tabela[vis]?.() || tabela.produtos()}</div>
+        ${R.cupons ? `<p class="rep__note muted">Descontos de cupom no período: ${money(R.cupons)}, já descontados do valor total e do lucro.</p>` : ""}
         ${R.perdas ? `<p class="rep__note rep__note--perda">Produtos devolvidos com defeito: ${money(R.perdas)} de custo perdido, já descontado do lucro.</p>` : ""}
         ${R.lista.some((p) => !p.custo) ? `<p class="muted rep__note no-print">Produtos sem preço de custo contam lucro igual ao valor de venda. Preencha o custo em Produtos.</p>` : ""}`
         : `<div class="empty">Nenhuma venda neste período.</div>`}
@@ -1104,6 +1133,170 @@
   }
 
   // ======================================================================
+  // CUPONS DE DESCONTO (com trava de margem de lucro por produto)
+  // ======================================================================
+  let cup = null;        // { cupons, usos }
+  let cupEdit = null;    // cupom em edição (com sel: Set de produtos na promoção)
+  let cupFiltro = { q: "", cat: "", so: "" };
+  const apiCupons = (method = "GET", body) => T().fetchJSON("/api/coupons", method, body, true);
+  const fmtData = (d) => (d ? d.split("-").reverse().join("/") : "");
+
+  function viewCupons() {
+    cupEdit = null;
+    return `<div class="admin-head"><div><h1>Cupons de desconto</h1><p class="muted">O cupom só vale nos produtos da promoção e nunca passa do lucro de cada um.</p></div>
+        <button class="btn btn--primary btn--sm" data-cup-new>${icon("i-plus")}Novo cupom</button></div>
+      ${asyncView("cup-root", skel(4), async () => { cup = await apiCupons(); renderCupons(); })}`;
+  }
+
+  // lucro de um produto com o cupom, para cliente (CPF) e lojista (CNPJ)
+  function margem(p, e) {
+    const custo = p.cost || 0;
+    const precoCli = p.promo ?? p.price, precoLoj = p.priceLoj ?? p.price;
+    const desc = (preco) => (e.tipo === "pct" ? (preco * (parseMoney(e.valor) || 0)) / 100 : Math.min(parseMoney(e.valor) || 0, preco));
+    const lado = (preco) => ({ preco, com: Math.max(0, preco - desc(preco)), lucro: preco - custo, sobra: preco - desc(preco) - custo });
+    const cli = lado(precoCli), loj = lado(precoLoj);
+    const lados = e.publico === "cliente" ? [cli] : e.publico === "lojista" ? [loj] : [cli, loj];
+    const semLucroBase = lados.some((l) => l.lucro <= 0);
+    // %: o desconto inteiro precisa caber no lucro. R$: o servidor limita ao lucro, então só bloqueia quem já não tem lucro
+    const semMargem = semLucroBase || (e.tipo === "pct" && lados.some((l) => l.sobra <= 0));
+    const limitado = e.tipo === "valor" && !semMargem && lados.some((l) => l.sobra <= 0);
+    return { custo, cli, loj, lados, semMargem, limitado, semCusto: !custo };
+  }
+
+  function renderCupons() {
+    if (!cup) return;
+    const hoje = iso(new Date());
+    const status = (c) => !c.ativo ? ["Pausado", "off"] : c.fim && c.fim < hoje ? ["Vencido", "off"] : c.inicio && c.inicio > hoje ? ["Agendado", "warn"] : c.limite && (cup.usos[c.code] || 0) >= c.limite ? ["Esgotado", "off"] : ["Ativo", "on"];
+    paint("cup-root", `
+      ${cupEdit ? cupFormHTML() : ""}
+      ${cup.cupons.length ? `<div class="olist">${cup.cupons.map((c) => {
+        const [st, cls] = status(c);
+        const nProd = Object.keys(c.produtos || {}).length;
+        return `<div class="cup-row">
+          <span class="cup-code">${esc(c.code)}</span>
+          <span class="cup-info"><b>${c.tipo === "pct" ? `${String(c.valor).replace(".", ",")}% off` : `${money(c.valor)} off`}</b>${c.descricao ? ` · ${esc(c.descricao)}` : ""}
+            <small class="muted">${[nProd ? `${nProd} ${nProd === 1 ? "produto" : "produtos"}` : "nenhum produto", c.minimo ? `mín. ${money(c.minimo)}` : "", c.canal === "ambos" ? "site e loja" : c.canal === "site" ? "só site" : "só loja", c.publico === "todos" ? "" : c.publico === "lojista" ? "só lojistas" : "só clientes", c.fim ? `até ${fmtData(c.fim)}` : ""].filter(Boolean).join(" · ")}</small></span>
+          <span class="cup-uso num">${cup.usos[c.code] || 0}${c.limite ? `/${c.limite}` : ""} <small>usos</small></span>
+          <span class="cup-st cup-st--${cls}">${st}</span>
+          <span class="tbl-actions">
+            <button class="icon-btn icon-btn--sm" data-cup-share="${esc(c.code)}" aria-label="Divulgar ${esc(c.code)} no WhatsApp">${icon("i-wa")}</button>
+            <button class="icon-btn icon-btn--sm" data-cup-toggle="${esc(c.code)}" aria-label="${c.ativo ? "Pausar" : "Ativar"} ${esc(c.code)}">${icon(c.ativo ? "i-pause" : "i-check")}</button>
+            <button class="icon-btn icon-btn--sm" data-cup-edit="${esc(c.code)}" aria-label="Editar ${esc(c.code)}">${icon("i-edit")}</button>
+            <button class="icon-btn icon-btn--sm danger" data-cup-del="${esc(c.code)}" aria-label="Excluir ${esc(c.code)}">${icon("i-trash")}</button>
+          </span>
+        </div>`;
+      }).join("")}</div>` : (cupEdit ? "" : `<div class="empty">Nenhum cupom ainda.<br><button class="btn btn--primary btn--sm" data-cup-new style="margin-top:12px">${icon("i-plus")}Criar o primeiro cupom</button></div>`)}`);
+  }
+
+  function novoCupom() {
+    const e = { code: "", descricao: "", tipo: "pct", valor: "10", minimo: "", maxDesconto: "", inicio: "", fim: "", limite: "", porCliente: false, canal: "ambos", publico: "todos", ativo: true, sel: new Set() };
+    T().products.forEach((p) => { if (!margem(p, e).semMargem) e.sel.add(p.id); });
+    return e;
+  }
+
+  function cupFormHTML() {
+    const e = cupEdit;
+    return `<form class="box cad-form cup-form" id="cup-form" novalidate>
+      <div class="box__head"><h2>${e.original ? `Editar cupom ${esc(e.original)}` : "Novo cupom"}</h2><button type="button" class="text-btn" data-cup-cancel>Cancelar</button></div>
+      <div class="cad-form__grid">
+        <label class="field"><span>Código</span><input name="code" value="${esc(e.code)}" maxlength="24" placeholder="Ex.: TOPSMART10" autocomplete="off" data-cup="code" required><span class="err"></span></label>
+        <label class="field"><span>Descrição <span class="opt">(aparece pro cliente)</span></span><input name="descricao" value="${esc(e.descricao)}" maxlength="80" placeholder="Ex.: 10% em películas" data-cup="descricao"></label>
+        <div class="field"><span class="field__label">Tipo de desconto</span><div class="seg seg--sm" role="radiogroup" aria-label="Tipo de desconto">
+          <label><input type="radio" name="tipo" value="pct" ${e.tipo === "pct" ? "checked" : ""} data-cup="tipo"><span>Porcentagem (%)</span></label>
+          <label><input type="radio" name="tipo" value="valor" ${e.tipo === "valor" ? "checked" : ""} data-cup="tipo"><span>Valor (R$)</span></label></div></div>
+        <label class="field"><span>${e.tipo === "pct" ? "Desconto (%)" : "Desconto (R$)"}</span><input name="valor" inputmode="decimal" value="${esc(e.valor)}" data-cup="valor" required><span class="err"></span></label>
+        <label class="field"><span>Pedido mínimo <span class="opt">(R$, opcional)</span></span><input name="minimo" inputmode="decimal" value="${esc(e.minimo)}" data-cup="minimo"></label>
+        ${e.tipo === "pct" ? `<label class="field"><span>Desconto máximo <span class="opt">(R$, opcional)</span></span><input name="maxDesconto" inputmode="decimal" value="${esc(e.maxDesconto)}" data-cup="maxDesconto"></label>` : ""}
+        <label class="field"><span>Válido de <span class="opt">(opcional)</span></span><input type="date" name="inicio" value="${esc(e.inicio)}" data-cup="inicio"></label>
+        <label class="field"><span>Válido até <span class="opt">(opcional)</span></span><input type="date" name="fim" value="${esc(e.fim)}" data-cup="fim"></label>
+        <label class="field"><span>Limite de usos <span class="opt">(opcional)</span></span><input name="limite" type="number" min="0" step="1" value="${esc(e.limite)}" data-cup="limite"></label>
+        <label class="field"><span>Onde vale</span><select name="canal" data-cup="canal"><option value="ambos" ${e.canal === "ambos" ? "selected" : ""}>Site e loja física</option><option value="site" ${e.canal === "site" ? "selected" : ""}>Só pedidos pelo site</option><option value="balcao" ${e.canal === "balcao" ? "selected" : ""}>Só na loja (balcão)</option></select></label>
+        <label class="field"><span>Para quem</span><select name="publico" data-cup="publico"><option value="todos" ${e.publico === "todos" ? "selected" : ""}>Todos</option><option value="cliente" ${e.publico === "cliente" ? "selected" : ""}>Só clientes (CPF)</option><option value="lojista" ${e.publico === "lojista" ? "selected" : ""}>Só lojistas (CNPJ)</option></select></label>
+      </div>
+      <div class="cup-checks">
+        <label class="check"><input type="checkbox" data-cup="porCliente" ${e.porCliente ? "checked" : ""}> Cada cliente usa uma vez só</label>
+        <label class="check"><input type="checkbox" data-cup="ativo" ${e.ativo ? "checked" : ""}> Cupom ativo</label>
+      </div>
+      <section class="cup-prods" id="cup-prods">${cupProdutosHTML()}</section>
+      <span class="err" id="cup-err"></span>
+      <button class="btn btn--primary" id="cup-save">${icon("i-check")}${e.original ? "Salvar cupom" : "Criar cupom"}</button>
+    </form>`;
+  }
+
+  function cupProdutosHTML() {
+    const e = cupEdit;
+    const prods = T().products;
+    const m = Object.fromEntries(prods.map((p) => [p.id, margem(p, e)]));
+    const semMargemDentro = prods.filter((p) => e.sel.has(p.id) && m[p.id].semMargem);
+    const semCusto = prods.filter((p) => e.sel.has(p.id) && m[p.id].semCusto);
+    const norm2 = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+    const cats = [...new Set(prods.map((p) => p.cat))];
+    const visiveis = prods.filter((p) => (!cupFiltro.cat || p.cat === cupFiltro.cat) && (!cupFiltro.q || norm2(`${p.name} ${p.code}`).includes(norm2(cupFiltro.q)))
+      && (!cupFiltro.so || (cupFiltro.so === "dentro" ? e.sel.has(p.id) : cupFiltro.so === "risco" ? m[p.id].semMargem : !e.sel.has(p.id))));
+    const precoTxt = (l) => `${money(l.preco)} → <b>${money(l.com)}</b>`;
+    const ladoTxt = (mm) => (e.publico === "lojista" ? [["Lojista", mm.loj]] : e.publico === "cliente" ? [["Cliente", mm.cli]] : [["Cliente", mm.cli], ["Lojista", mm.loj]]);
+    return `
+      <div class="cup-prods__head">
+        <h3>Produtos na promoção <span class="muted">(${e.sel.size} de ${prods.length})</span></h3>
+        <div class="cup-prods__tools">
+          <button type="button" class="btn btn--ghost btn--sm" data-cup-sel="margem">Incluir todos com lucro</button>
+          <button type="button" class="btn btn--ghost btn--sm" data-cup-sel="nenhum">Tirar todos</button>
+        </div>
+      </div>
+      ${semMargemDentro.length ? `<div class="alert alert--bad">${icon("i-lock")}<div><strong>${semMargemDentro.length} ${semMargemDentro.length === 1 ? "produto fica" : "produtos ficam"} sem lucro com esse desconto.</strong> ${semMargemDentro.slice(0, 4).map((p) => esc(p.name)).join(", ")}${semMargemDentro.length > 4 ? "…" : ""}</div><button type="button" class="btn btn--dark btn--sm" data-cup-sel="tirar-risco">Tirar ${semMargemDentro.length === 1 ? "esse" : `esses ${semMargemDentro.length}`} da promoção</button></div>` : ""}
+      ${semCusto.length ? `<div class="alert alert--warn">${icon("i-clock")}<div>${semCusto.length} ${semCusto.length === 1 ? "produto está" : "produtos estão"} sem preço de custo: o lucro deles não dá pra conferir. Preencha o custo em Produtos.</div></div>` : ""}
+      <div class="cup-prods__filters">
+        <input type="search" class="admin-search" placeholder="Buscar produto ou código" value="${esc(cupFiltro.q)}" data-cup-f="q" aria-label="Buscar produto">
+        <select data-cup-f="cat" aria-label="Categoria"><option value="">Todas as categorias</option>${cats.map((c) => `<option value="${esc(c)}" ${cupFiltro.cat === c ? "selected" : ""}>${esc(T().catBy(c).name)}</option>`).join("")}</select>
+        <select data-cup-f="so" aria-label="Mostrar"><option value="">Mostrar todos</option><option value="dentro" ${cupFiltro.so === "dentro" ? "selected" : ""}>Só os da promoção</option><option value="fora" ${cupFiltro.so === "fora" ? "selected" : ""}>Só os fora</option><option value="risco" ${cupFiltro.so === "risco" ? "selected" : ""}>Só os sem lucro</option></select>
+      </div>
+      <div class="table-wrap"><table class="cup-table">
+        <thead><tr><th><span class="sr-only">Na promoção</span></th><th>Produto</th><th class="r">Custo</th><th>Preço → com cupom</th><th class="r">Lucro que sobra</th><th></th></tr></thead>
+        <tbody>${visiveis.map((p) => {
+          const mm = m[p.id], dentro = e.sel.has(p.id);
+          const st = mm.semMargem ? '<span class="cup-st cup-st--bad">Sem lucro</span>' : mm.semCusto ? '<span class="cup-st cup-st--warn">Sem custo</span>' : mm.limitado ? '<span class="cup-st cup-st--warn">Limitado ao lucro</span>' : '<span class="cup-st cup-st--on">OK</span>';
+          return `<tr class="${dentro ? "" : "is-out"} ${mm.semMargem && dentro ? "is-bad" : ""}">
+            <td><input type="checkbox" data-cup-prod="${esc(p.id)}" ${dentro ? "checked" : ""} aria-label="Incluir ${esc(p.name)} na promoção"></td>
+            <td><b>${esc(p.name)}</b> <small class="muted">${esc(p.code)}</small></td>
+            <td class="r num">${mm.custo ? money(mm.custo) : "-"}</td>
+            <td class="num">${ladoTxt(mm).map(([n, l]) => `<div><small class="muted">${n}</small> ${precoTxt(l)}</div>`).join("")}</td>
+            <td class="r num">${ladoTxt(mm).map(([, l]) => `<div class="${l.sobra <= 0 ? "neg" : "pos"}">${l.sobra <= 0 && e.tipo === "valor" && l.lucro > 0 ? money(0) : money(l.sobra)}</div>`).join("")}</td>
+            <td>${st}</td>
+          </tr>`;
+        }).join("") || '<tr><td colspan="6" class="muted">Nenhum produto com esse filtro.</td></tr>'}</tbody>
+      </table></div>`;
+  }
+
+  // redesenha a tabela sem perder o foco do campo de busca
+  function refreshCupProds() {
+    const el = $("#cup-prods"); if (!el) return;
+    const a = document.activeElement, f = a?.dataset?.cupF, pos = a?.selectionStart;
+    el.innerHTML = cupProdutosHTML();
+    if (f) { const n = $(`[data-cup-f=${f}]`); n?.focus(); if (pos != null && n?.setSelectionRange) n.setSelectionRange(pos, pos); }
+  }
+
+  async function salvarCupom(f) {
+    const e = cupEdit, err = $("#cup-err");
+    const code = e.code.toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+    const valor = parseMoney(e.valor);
+    T().setErr(f, "code", code.length < 3 ? "Use pelo menos 3 letras ou números" : cup.cupons.some((c) => c.code === code && c.code !== e.original) ? "Já existe um cupom com esse código" : "");
+    T().setErr(f, "valor", !(valor > 0) ? "Informe o desconto" : e.tipo === "pct" && valor >= 100 ? "Use menos de 100%" : "");
+    if (code.length < 3 || !(valor > 0) || (e.tipo === "pct" && valor >= 100) || cup.cupons.some((c) => c.code === code && c.code !== e.original)) return;
+    const prods = T().products.filter((p) => e.sel.has(p.id));
+    const risco = prods.filter((p) => margem(p, e).semMargem);
+    if (risco.length) { err.textContent = `Tire da promoção os ${risco.length} produtos sem lucro antes de salvar.`; $(".cup-prods .alert--bad")?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+    if (!prods.length) { err.textContent = "Coloque pelo menos um produto na promoção."; return; }
+    if (e.inicio && e.fim && e.fim < e.inicio) { err.textContent = "A data final está antes da inicial."; return; }
+    // desconto máximo por unidade = lucro de cada produto (um centavo de folga): o servidor nunca passa disso
+    const produtos = Object.fromEntries(prods.map((p) => { const mm = margem(p, e); return [p.id, { cli: Math.max(0, Math.round((mm.cli.lucro - 0.01) * 100) / 100), loj: Math.max(0, Math.round((mm.loj.lucro - 0.01) * 100) / 100) }]; }));
+    const novo = { code, descricao: e.descricao, tipo: e.tipo, valor, minimo: parseMoney(e.minimo), maxDesconto: e.tipo === "pct" ? parseMoney(e.maxDesconto) : 0, inicio: e.inicio, fim: e.fim, limite: parseInt(e.limite, 10) || 0, porCliente: e.porCliente, canal: e.canal, publico: e.publico, ativo: e.ativo, criadoEm: e.criadoEm, produtos };
+    const lista = e.original ? cup.cupons.map((c) => (c.code === e.original ? novo : c)) : [novo, ...cup.cupons];
+    const btn = $("#cup-save"); btn.disabled = true;
+    try { cup = await apiCupons("PUT", { cupons: lista }); cupEdit = null; T().toast(e.original ? "Cupom salvo" : `Cupom ${code} criado`); renderCupons(); }
+    catch (er) { btn.disabled = false; err.textContent = er.message; }
+  }
+
+  // ======================================================================
   // EVENTOS
   // ======================================================================
   document.addEventListener("click", async (e) => {
@@ -1111,6 +1304,35 @@
     if (!t) return;
     const d = t.dataset;
     if ("pdvRetry" in d) return T().router();
+    // ---- cupons ----
+    if ("cupNew" in d) { cupEdit = novoCupom(); cupFiltro = { q: "", cat: "", so: "" }; renderCupons(); $("#cup-form [name=code]")?.focus(); return; }
+    if ("cupCancel" in d) { cupEdit = null; return renderCupons(); }
+    if (d.cupEdit) {
+      const c = cup.cupons.find((x) => x.code === d.cupEdit); if (!c) return;
+      const txt = (v) => (v ? String(v).replace(".", ",") : "");
+      cupEdit = { ...c, original: c.code, valor: txt(c.valor), minimo: txt(c.minimo), maxDesconto: txt(c.maxDesconto), limite: c.limite ? String(c.limite) : "", sel: new Set(Object.keys(c.produtos || {})) };
+      cupFiltro = { q: "", cat: "", so: "" }; renderCupons(); window.scrollTo({ top: 0, behavior: "smooth" }); return;
+    }
+    if (d.cupSel) {
+      const prods = T().products;
+      if (d.cupSel === "margem") prods.forEach((p) => { if (!margem(p, cupEdit).semMargem) cupEdit.sel.add(p.id); });
+      if (d.cupSel === "nenhum") cupEdit.sel.clear();
+      if (d.cupSel === "tirar-risco") { const n = prods.filter((p) => cupEdit.sel.has(p.id) && margem(p, cupEdit).semMargem); n.forEach((p) => cupEdit.sel.delete(p.id)); T().toast(`${n.length} ${n.length === 1 ? "produto saiu" : "produtos saíram"} da promoção`); }
+      $("#cup-err").textContent = ""; return refreshCupProds();
+    }
+    if (d.cupToggle || d.cupDel) {
+      const c = cup.cupons.find((x) => x.code === (d.cupToggle || d.cupDel)); if (!c) return;
+      if (d.cupDel && !confirm(`Excluir o cupom ${c.code}? Quem tiver o código não consegue mais usar.`)) return;
+      const lista = d.cupDel ? cup.cupons.filter((x) => x !== c) : cup.cupons.map((x) => (x === c ? { ...x, ativo: !x.ativo } : x));
+      try { cup = await apiCupons("PUT", { cupons: lista }); T().toast(d.cupDel ? "Cupom excluído" : c.ativo ? `${c.code} pausado` : `${c.code} ativado`); renderCupons(); } catch (err) { T().toast(err.message); }
+      return;
+    }
+    if (d.cupShare) {
+      const c = cup.cupons.find((x) => x.code === d.cupShare); if (!c) return;
+      const v = c.tipo === "pct" ? `${String(c.valor).replace(".", ",")}% de desconto` : `${money(c.valor)} de desconto`;
+      const txt = `*Cupom Top Smart: ${c.code}*\n\n${c.descricao || v} em produtos selecionados${c.minimo ? ` (pedido mínimo ${money(c.minimo)})` : ""}.${c.fim ? `\nVálido até ${fmtData(c.fim)}.` : ""}\n\nUse no site ou na loja: ${location.origin}`;
+      return window.open(`https://wa.me/?text=${encodeURIComponent(txt)}`, "_blank", "noopener");
+    }
     // ---- clientes ----
     if ("cadCliNew" in d) { cliEdit = {}; renderClientes(); $("#cad-cli-form [name=nome]")?.focus(); return; }
     if ("cadCliCancel" in d) { cliEdit = null; return renderClientes(); }
@@ -1145,6 +1367,7 @@
     if ("cliNew" in d) { cliForm = { nome: $("#pdv-cli")?.value.trim() || "", tipo: "cliente" }; renderPdv(); setTimeout(() => $("#cli-form [name=" + (cliForm?.nome ? "doc" : "nome") + "]")?.focus(), 30); return; }
     if ("cliCancel" in d) { cliForm = null; return renderPdv(); }
     if ("pdvCliClear" in d) return setCliente(null);
+    if ("pdvCupomDel" in d) { sale.cupom = null; saveSale(); return renderPdv(); }
     if (d.pdvCli !== undefined && t.closest("#pdv-cli-results")) return setCliente($("#pdv-cli-results")._found[+d.pdvCli]);
     if ("pdvCliNew" in d) return setCliente({ nome: $("#pdv-cli").value.trim(), doc: "", telefone: "", tipo: "cliente" });
     if ("pdvPagar" in d) return irPagamento();
@@ -1242,6 +1465,12 @@
     const t = e.target;
     if (t.classList.contains("pdv-q")) { searchAlvo = t.dataset.alvo; results = buscar(t.value); resultIdx = 0; renderResults(); return; }
     if (t.dataset.maskDoc !== undefined) { t.value = fmtDoc(t.value); return; }
+    if (t.dataset.cup !== undefined && cupEdit && t.type !== "checkbox" && t.type !== "radio" && t.tagName !== "SELECT") {
+      cupEdit[t.dataset.cup] = t.value;
+      if (t.dataset.cup === "valor") refreshCupProds();
+      return;
+    }
+    if (t.dataset.cupF !== undefined && cupEdit && t.tagName === "INPUT") { cupFiltro[t.dataset.cupF] = t.value; return refreshCupProds(); }
     if (t.id === "ent-q") return entBuscar(t.value);
     if (t.id === "cli-busca") { cliFiltro = t.value; const pos = t.selectionStart; renderClientes(); const n = $("#cli-busca"); n?.focus(); n?.setSelectionRange(pos, pos); return; }
     if (t.id === "pdv-cli") return renderCliResults(t.value);
@@ -1261,6 +1490,15 @@
 
   document.addEventListener("change", async (e) => {
     const t = e.target;
+    if (t.dataset.cup !== undefined && cupEdit && (t.type === "checkbox" || t.type === "radio" || t.tagName === "SELECT")) {
+      const k = t.dataset.cup;
+      cupEdit[k] = t.type === "checkbox" ? t.checked : t.value;
+      if (k === "tipo") { renderCupons(); $("#cup-form [name=valor]")?.focus(); }
+      else if (k === "publico") refreshCupProds();
+      return;
+    }
+    if (t.dataset.cupF !== undefined && cupEdit && t.tagName === "SELECT") { cupFiltro[t.dataset.cupF] = t.value; return refreshCupProds(); }
+    if (t.dataset.cupProd !== undefined && cupEdit) { if (t.checked) cupEdit.sel.add(t.dataset.cupProd); else cupEdit.sel.delete(t.dataset.cupProd); $("#cup-err").textContent = ""; return refreshCupProds(); }
     if (t.dataset.pdvLoja !== undefined) { store.set("ts_loja", t.value); sale.vendedorId = ""; saveSale(); return T().router(); }
     if (t.dataset.pdvVend !== undefined) { sale.vendedorId = t.value; store.set("ts_pdv_vendedor", t.value); saveSale(); const er = $("#pdv-vend-err"); if (er) er.textContent = ""; return; }
     if (t.dataset.ent !== undefined) { ent[t.dataset.ent] = t.type === "checkbox" ? t.checked : t.value; saveEnt(); return; }
@@ -1314,6 +1552,8 @@
   document.addEventListener("submit", async (e) => {
     const f = e.target;
     if (f.id === "cli-form") { e.preventDefault(); return salvarClienteNovo(f); }
+    if (f.id === "cup-form") { e.preventDefault(); return salvarCupom(f); }
+    if (f.id === "pdv-cupom") { e.preventDefault(); return aplicarCupomPdv(f.cupom.value); }
     if (f.id === "cad-cli-form") {
       e.preventDefault();
       const nome = f.nome.value.trim(), doc = f.doc.value.trim(), tel = f.phone.value.trim(), dig = T().digits(doc);
@@ -1420,5 +1660,5 @@
     }
   });
 
-  window.TS_EXT = { tabs: { inicio: viewInicio, balcao: viewBalcao, caixa: viewCaixa, relatorios: viewRelatorios, equipe: viewEquipe, clientes: viewClientes, fornecedores: viewFornecedores, entrada: viewEntrada } };
+  window.TS_EXT = { tabs: { inicio: viewInicio, balcao: viewBalcao, caixa: viewCaixa, relatorios: viewRelatorios, equipe: viewEquipe, clientes: viewClientes, fornecedores: viewFornecedores, entrada: viewEntrada, cupons: viewCupons } };
 })();

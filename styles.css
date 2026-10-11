@@ -1270,3 +1270,58 @@ body.is-admin { --header-h: 124px; }
 .entrada__foot { display: flex; justify-content: flex-end; gap: 12px; align-items: center; }
 .entrada .pdv__table tfoot td { font-weight: 700; border-top: 2px solid var(--foreground); border-bottom: 0; }
 @media (max-width: 760px) { .entrada__top { grid-template-columns: 1fr; } .ajuste { grid-template-columns: 1fr 1fr; } .ajuste input[name=motivo] { grid-column: 1 / -1; order: -1; } }.ent-newforn, .cli-new { align-self: flex-start; }
+
+/* ---------- cupom de desconto (carrinho e balcão) ---------- */
+.cupom-form { display: flex; flex-wrap: wrap; gap: 8px; }
+.cupom-form input { flex: 1; min-width: 0; height: 40px; border-radius: var(--radius-sm); border: 1px solid var(--border); padding: 0 12px; font: inherit; font-size: 14px; text-transform: uppercase; background: #fff; }
+.cupom-form input::placeholder { text-transform: none; }
+.cupom-form .btn { height: 40px; flex: none; }
+.cupom-err { flex-basis: 100%; color: var(--danger); font-size: 13px; }
+.cupom { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 14px; }
+.cupom .i { flex: none; width: 18px; height: 18px; }
+.cupom > span { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cupom small { color: inherit; opacity: .8; font-size: 12px; }
+.cupom--ok { background: #e3f5e9; color: #0e6b37; }
+.cupom--load { background: var(--surface); color: var(--muted); }
+.total-line--sub, .total-line--desc { font-size: 14px; }
+.total-line--sub { color: var(--muted); }
+.total-line--desc { color: #0e6b37; font-weight: 600; }
+
+/* ---------- cupons (painel) ---------- */
+.cup-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 14px; }
+.cup-code { font: 700 14px/1 ui-monospace, "SFMono-Regular", Consolas, monospace; letter-spacing: .04em; padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px dashed #c3c9d2; }
+.cup-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 14px; }
+.cup-info small { font-size: 12.5px; }
+.cup-uso { font-size: 15px; font-weight: 600; white-space: nowrap; }
+.cup-uso small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.cup-st { display: inline-block; font-size: 12px; font-weight: 600; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+.cup-st--on { background: #e3f5e9; color: #0e6b37; }
+.cup-st--off { background: var(--surface); color: var(--muted); }
+.cup-st--warn { background: #fff4dc; color: #6b4300; }
+.cup-st--bad { background: #fde7e3; color: #9e2510; }
+.cup-form { margin-bottom: 20px; }
+.cup-checks { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.cup-prods { display: grid; gap: 12px; border-top: 1px solid var(--border); padding-top: 16px; }
+.cup-prods__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.cup-prods__head h3 { margin: 0; font-size: 16px; }
+.cup-prods__tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.cup-prods__filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.cup-prods__filters .admin-search { flex: 1; min-width: 180px; }
+.cup-prods__filters select { height: 40px; border-radius: var(--radius-sm); border: 1px solid var(--border); padding: 0 10px; background: #fff; font: inherit; font-size: 14px; }
+.alert--bad { background: #fde7e3; color: #8a200d; box-shadow: inset 0 0 0 1px #f5c0b5; }
+.cup-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.cup-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.cup-table td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.cup-table .r { text-align: right; }
+.cup-table td > div + div { margin-top: 2px; }
+.cup-table input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary); }
+.cup-table tr.is-out td:not(:first-child) { opacity: .5; }
+.cup-table tr.is-bad td { background: #fff4f2; }
+.cup-table .neg { color: var(--danger); font-weight: 600; }
+.cup-table .pos { color: #0e6b37; }
+@media (max-width: 720px) {
+  .cup-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .cup-row .cup-info { grid-column: 1 / -1; grid-row: 2; }
+  .cup-row .tbl-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  .cup-table { min-width: 620px; }
+}
