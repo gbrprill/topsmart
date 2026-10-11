@@ -10,6 +10,11 @@
 // POST   /api/pdv?r=venda                        registra venda, troca ou devolução no caixa aberto da loja
 // GET    /api/pdv?r=clientes                     clientes cadastrados no balcão
 // POST   /api/pdv?r=clientes                     cadastra cliente novo { nome, doc, telefone, tipo }
+// PUT    /api/pdv?r=clientes&id=                 edita dados do cliente
+// POST   /api/pdv?r=clientes&acao=credito&id=    ajuste manual de crédito na loja { valor (+/-), motivo }
+// GET    /api/pdv?r=fornecedores                 fornecedores + últimas entradas de estoque
+// PUT    /api/pdv?r=fornecedores                 salva a lista de fornecedores
+// POST   /api/pdv?r=compra                       registra entrada de estoque { fornecedorId, nota, data, itens }
 // POST   /api/pdv?r=venda&acao=cancelar&code=    cancela uma venda (não conta mais no caixa)
 // GET    /api/pdv?r=vendas&from=ISO&to=ISO&lojaId=  vendas do período (relatórios)
 
@@ -27,8 +32,12 @@ const K = {
   vendas: `${P}vendas`,
   seq: `${P}venda_seq`,
   clientes: `${P}clientes`,
+  fornecedores: `${P}fornecedores`,
+  compra: (id) => `${P}compra:${id}`,
+  compras: `${P}compras`,
 };
-const FORMAS = ["dinheiro", "pix", "credito", "debito", "fiado"];
+// credito_loja: saldo do cliente na loja (gerado em trocas/devoluções, usado como pagamento)
+const FORMAS = ["dinheiro", "pix", "credito", "debito", "fiado", "credito_loja"];
 const DEFAULT_SETUP = { lojas: [{ id: "eng", nome: "Top Smart ENG" }], vendedores: [] };
 
 const getJSON = async (key) => { const raw = await redis("GET", key); return raw ? JSON.parse(raw) : null; };
@@ -60,6 +69,18 @@ function resumo(caixa, vendas) {
     qtdVendas, qtdDevolucoes, qtdTrocas, sangrias: num(sangrias), suprimentos: num(suprimentos), dinheiroEsperado,
     diferenca: caixa.contado == null ? null : num(caixa.contado - dinheiroEsperado),
   };
+}
+
+// soma (ou tira) crédito do cliente e guarda o extrato; devolve o saldo novo
+async function moverCredito(clienteId, valor, motivo, ref, permitirNegativo = false) {
+  const lista = (await getJSON(K.clientes)) || [];
+  const cad = lista.find((x) => x.id === clienteId);
+  if (!cad) return null;
+  cad.credito = num((cad.credito || 0) + valor);
+  if (cad.credito < 0 && !permitirNegativo) cad.credito = 0;
+  cad.extrato = [{ em: new Date().toISOString(), valor: num(valor), motivo: str(motivo, 120), ref: ref || null }, ...(cad.extrato || [])].slice(0, 60);
+  await setJSON(K.clientes, lista);
+  return cad.credito;
 }
 
 async function vendasDoCaixa(caixa) {
@@ -149,7 +170,10 @@ export default async function handler(req, res) {
       if (!venda) return res.status(404).json({ error: "Venda não encontrada" });
       const caixa = await getJSON(K.caixa(venda.caixaId));
       if (caixa?.status !== "ABERTO") return res.status(409).json({ error: "Só dá para cancelar vendas do caixa aberto" });
+      if (venda.status === "CANCELADA") return res.status(409).json({ error: "Esta venda já foi cancelada" });
       venda.status = "CANCELADA"; venda.canceladaEm = new Date().toISOString(); venda.motivoCancelamento = str(b.motivo, 120);
+      // desfaz o crédito na loja que essa venda gerou ou consumiu
+      if (venda.creditoMov && venda.cliente?.id) await moverCredito(venda.cliente.id, -venda.creditoMov, `Cancelamento ${venda.code}`, venda.code, true);
       await setJSON(K.venda(venda.code), venda);
       return res.status(200).json({ venda });
     }
@@ -191,7 +215,7 @@ export default async function handler(req, res) {
       const pago = num(pagamentos.reduce((s, p) => s + p.valor, 0));
       // dinheiro pode passar do total (troco); as outras formas precisam fechar exatamente
       const naoDinheiro = num(pagamentos.filter((p) => p.forma !== "dinheiro").reduce((s, p) => s + p.valor, 0));
-      if (naoDinheiro > total + 0.001) return res.status(400).json({ error: "Pagamentos em Pix, cartão ou fiado passam do total" });
+      if (naoDinheiro > total + 0.001) return res.status(400).json({ error: "Pagamentos em Pix, cartão, fiado ou crédito passam do total" });
       if (pago + 0.001 < total) return res.status(400).json({ error: `Faltam ${(total - pago).toFixed(2).replace(".", ",")} para fechar o pagamento` });
       const devolvendoDinheiro = tipo === "devolucao" || (tipo === "troca" && diferenca < 0);
       if (devolvendoDinheiro && pagamentos.some((p) => p.forma === "fiado")) return res.status(400).json({ error: "Valor devolvido ao cliente não pode ser em fiado" });
@@ -204,8 +228,19 @@ export default async function handler(req, res) {
       }
 
       const c = b.cliente || {};
-      const cliente = c.nome ? { nome: str(c.nome, 120), doc: str(c.doc, 20), telefone: str(c.telefone, 20), tipo: c.tipo === "lojista" ? "lojista" : "cliente" } : null;
+      const cliente = c.nome ? { id: str(c.id, 60) || null, nome: str(c.nome, 120), doc: str(c.doc, 20), telefone: str(c.telefone, 20), tipo: c.tipo === "lojista" ? "lojista" : "cliente" } : null;
       if (pagamentos.some((p) => p.forma === "fiado") && !cliente) return res.status(400).json({ error: "Venda no fiado precisa de cliente identificado" });
+
+      // crédito na loja: na devolução/troca vira saldo do cliente; na venda, usa o saldo
+      const usoCredito = num(pagamentos.filter((p) => p.forma === "credito_loja").reduce((s, p) => s + p.valor, 0));
+      let creditoMov = 0;
+      if (usoCredito) {
+        const lista = (await getJSON(K.clientes)) || [];
+        const cad = cliente?.id && lista.find((x) => x.id === cliente.id);
+        if (!cad) return res.status(400).json({ error: "Crédito na loja precisa de cliente cadastrado. Cadastre o cliente primeiro." });
+        creditoMov = devolvendoDinheiro ? usoCredito : -usoCredito;
+        if (creditoMov < 0 && (cad.credito || 0) + 0.001 < usoCredito) return res.status(400).json({ error: `${cad.nome} tem só ${num(cad.credito || 0).toFixed(2).replace(".", ",")} de crédito` });
+      }
 
       const seq = await redis("INCR", K.seq);
       const venda = {
@@ -213,7 +248,9 @@ export default async function handler(req, res) {
         tipo, status: "CONCLUIDA", criadaEm: new Date().toISOString(), lojaId, lojaNome: setup.lojas.find((l) => l.id === lojaId)?.nome || "",
         caixaId, vendedor: { id: vendedor.id, nome: vendedor.nome }, cliente, itens, total, pagamentos, troco, obs: str(b.obs, 300),
         ...(tipo === "troca" ? { devolvidos, diferenca, levado, voltou } : {}),
+        ...(creditoMov ? { creditoMov } : {}),
       };
+      if (creditoMov) venda.creditoSaldo = await moverCredito(cliente.id, creditoMov, devolvendoDinheiro ? `Crédito gerado na ${tipo}` : "Usado na compra", venda.code);
       await setJSON(K.venda(venda.code), venda);
       await redis("LPUSH", K.vendas, venda.code);
       const caixa = await getJSON(K.caixa(caixaId));
@@ -225,10 +262,65 @@ export default async function handler(req, res) {
     if (r === "clientes" && req.method === "GET") {
       return res.status(200).json({ clientes: (await getJSON(K.clientes)) || [] });
     }
+    if (r === "clientes" && req.method === "POST" && acao === "credito") {
+      const valor = num(b.valor);
+      if (!valor || Math.abs(valor) > 1e6) return res.status(400).json({ error: "Informe o valor do ajuste" });
+      const lista = (await getJSON(K.clientes)) || [];
+      const cad = lista.find((x) => x.id === str(req.query.id, 60));
+      if (!cad) return res.status(404).json({ error: "Cliente não encontrado" });
+      if ((cad.credito || 0) + valor < -0.001) return res.status(400).json({ error: "O crédito não pode ficar negativo" });
+      const saldo = await moverCredito(cad.id, valor, str(b.motivo, 120) || "Ajuste manual", null);
+      return res.status(200).json({ credito: saldo });
+    }
+    if (r === "clientes" && req.method === "PUT") {
+      const lista = (await getJSON(K.clientes)) || [];
+      const cad = lista.find((x) => x.id === str(req.query.id, 60));
+      if (!cad) return res.status(404).json({ error: "Cliente não encontrado" });
+      const nome = str(b.nome, 120);
+      if (nome.length < 2) return res.status(400).json({ error: "Informe o nome do cliente" });
+      Object.assign(cad, { nome, doc: str(b.doc, 20), telefone: str(b.telefone, 20), tipo: b.tipo === "lojista" ? "lojista" : "cliente" });
+      await setJSON(K.clientes, lista);
+      return res.status(200).json({ cliente: cad });
+    }
+
+    // ---------- fornecedores e entradas de estoque ----------
+    if (r === "fornecedores" && req.method === "GET") {
+      const ids = await redis("LRANGE", K.compras, 0, 499);
+      return res.status(200).json({ fornecedores: (await getJSON(K.fornecedores)) || [], compras: (await mget(ids.map(K.compra))).filter(Boolean) });
+    }
+    if (r === "fornecedores" && req.method === "PUT") {
+      const fornecedores = (Array.isArray(b.fornecedores) ? b.fornecedores : []).slice(0, 500).map((x) => ({
+        id: str(x.id, 60) || randomUUID(), nome: str(x.nome, 120), doc: str(x.doc, 20), telefone: str(x.telefone, 20),
+        contato: str(x.contato, 80), cidade: str(x.cidade, 80), obs: str(x.obs, 300), criadoEm: str(x.criadoEm, 30) || new Date().toISOString(),
+      })).filter((x) => x.nome);
+      await setJSON(K.fornecedores, fornecedores);
+      return res.status(200).json({ fornecedores });
+    }
+    if (r === "compra" && req.method === "POST") {
+      const fornecedores = (await getJSON(K.fornecedores)) || [];
+      const forn = fornecedores.find((x) => x.id === str(b.fornecedorId, 60));
+      if (!forn) return res.status(400).json({ error: "Escolha o fornecedor" });
+      const itens = (Array.isArray(b.itens) ? b.itens : []).slice(0, 300).map((it) => {
+        const qty = Math.max(1, Math.min(99999, parseInt(it.qty, 10) || 1));
+        const custo = Math.max(0, Math.min(1e6, num(it.custo)));
+        return { productId: str(it.productId, 120), name: str(it.name, 160), code: str(it.code, 20), qty, custo, sub: num(qty * custo) };
+      }).filter((it) => it.name);
+      if (!itens.length) return res.status(400).json({ error: "Adicione os produtos que chegaram" });
+      const data = /^\d{4}-\d{2}-\d{2}$/.test(b.data || "") ? b.data : new Date().toISOString().slice(0, 10);
+      const compra = {
+        id: randomUUID(), criadaEm: new Date().toISOString(), data, nota: str(b.nota, 40), obs: str(b.obs, 300),
+        lojaId: str(b.lojaId, 40), fornecedor: { id: forn.id, nome: forn.nome }, itens, total: num(itens.reduce((s, it) => s + it.sub, 0)),
+      };
+      await setJSON(K.compra(compra.id), compra);
+      await redis("LPUSH", K.compras, compra.id);
+      return res.status(201).json({ compra });
+    }
+
     if (r === "clientes" && req.method === "POST") {
       const cli = {
         id: randomUUID(), nome: str(b.nome, 120), doc: str(b.doc, 20), telefone: str(b.telefone, 20),
         email: str(b.email, 120).toLowerCase(), tipo: b.tipo === "lojista" ? "lojista" : "cliente", criadoEm: new Date().toISOString(),
+        credito: 0, extrato: [],
       };
       if (cli.nome.length < 2) return res.status(400).json({ error: "Informe o nome do cliente" });
       const lista = (await getJSON(K.clientes)) || [];

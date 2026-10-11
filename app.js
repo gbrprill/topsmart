@@ -1439,7 +1439,7 @@
 
   function adminUsers() {
     const list = store.get("ts_users", []);
-    return `<div class="box"><h2>Cadastros (${list.length})</h2>
+    return `<div class="box"><h2>Cadastros feitos no site <span class="muted">(${list.length})</span></h2>
       ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Nome / Razão social</th><th>CPF / CNPJ</th><th>Telefone</th><th>E-mail</th></tr></thead><tbody>
         ${list.map((u) => `<tr><td>${u.type === "lojista" ? '<span class="tag tag--pro">Lojista</span>' : '<span class="tag">Cliente</span>'}</td>
           <td>${esc(u.type === "lojista" ? u.razao : u.name)}</td><td>${esc(u.cnpj || u.cpf)}</td><td>${esc(u.phone)}</td><td>${esc(u.email)}</td></tr>`).join("")}
@@ -1463,8 +1463,8 @@
     const body = { produtos: adminProducts, pedidos: adminOrders, "avise-me": adminAlertsTab, cadastros: adminUsers, config, ...ext }[tab] || adminProducts;
     const groups = [
       ["Vendas", [["inicio", "Início", "i-home"], ["balcao", "Venda balcão", "i-store"], ["pedidos", "Pedidos do site", "i-bag"], ["avise-me", "Avise-me", "i-bell"]]],
-      ["Financeiro", [["caixa", "Caixa", "i-cash"], ["relatorios", "Relatórios", "i-chart"]]],
-      ["Cadastros", [["produtos", "Produtos", "i-tag"], ["cadastros", "Clientes", "i-user"], ["equipe", "Lojas e vendedores", "i-users"]]],
+      ["Financeiro", [["caixa", "Caixa", "i-cash"], ["entrada", "Entrada de estoque", "i-download"], ["relatorios", "Relatórios", "i-chart"]]],
+      ["Cadastros", [["produtos", "Produtos", "i-tag"], ["clientes", "Clientes", "i-user"], ["fornecedores", "Fornecedores", "i-truck"], ["equipe", "Lojas e vendedores", "i-users"]]],
       ["Sistema", [["config", "Configurações", "i-gear"]]],
     ];
     const badge = (k) => k === "avise-me" ? `<span class="side__n" id="tab-alerts-n">${pendingAlerts().length || ""}</span>`
@@ -1473,7 +1473,7 @@
       <nav class="side" aria-label="Painel">
         <div class="side__who"><strong>${esc(s.name)}</strong><button class="text-btn" data-logout>Sair</button></div>
         ${groups.map(([g, items]) => `<div class="side__group"><span class="side__label">${g}</span>
-          ${items.filter(([k]) => k in ext || !["inicio", "balcao", "caixa", "relatorios", "equipe"].includes(k)).map(([k, v, ic]) =>
+          ${items.filter(([k]) => k in ext || !["inicio", "balcao", "caixa", "relatorios", "equipe", "clientes", "fornecedores", "entrada"].includes(k)).map(([k, v, ic]) =>
             `<a class="side__link ${tab === k ? "is-active" : ""}" href="#/admin?aba=${k}" ${tab === k ? 'aria-current="page"' : ""}>${icon(ic)}<span>${v}</span>${badge(k)}</a>`).join("")}
         </div>`).join("")}
       </nav>
@@ -1866,7 +1866,7 @@
   // funções compartilhadas com o pdv.js (ponto de venda, caixa e relatórios)
   window.TS = {
     $, money, esc, icon, digits, masks, store, toast, session, adminAuth, fmtDate, fullName, catBy, media, prodBy, users,
-    fetchJSON, router, saveProducts, PAYMENT_LABEL, whatsapp, validate, setErr, req, phoneRule,
+    fetchJSON, router, saveProducts, adminUsersHTML: () => adminUsers(), PAYMENT_LABEL, whatsapp, validate, setErr, req, phoneRule,
     get products() { return products; },
     get newOrders() { return adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : null; },
     get pendingAlerts() { return adminAlerts ? pendingAlerts().length : null; },

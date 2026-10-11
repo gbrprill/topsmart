@@ -1227,3 +1227,46 @@ body.is-admin { --header-h: 124px; }
 @media (max-width: 520px) { .pdv__bar .seg { width: 100%; } .pdv__bar .seg button { flex: 1; justify-content: center; padding: 0 8px; } }.cell-sel { max-width: 140px; }
 .estado-hint { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
 .pdv__table td:first-child { min-width: 160px; }
+
+/* ---------- crédito na loja, vendedor rápido, clientes, fornecedores, entrada ---------- */
+.cli__credito { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.cli__credito .i { width: 14px; height: 14px; }
+.cli__credito.has { color: #0e6b37; }
+.cli__credito.has .i { color: #0e6b37; }
+.vend-rapido { display: grid; gap: 8px; padding: 12px; border-radius: 12px; background: var(--primary-soft); }
+.vend-rapido p { margin: 0; font-size: 13px; color: var(--primary-dark); }
+.vend-rapido__row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.vend-rapido input { height: 40px; border-radius: 10px; border: 1px solid var(--line); padding: 0 10px; font-size: 15px; background: #fff; }
+.vend-rapido .text-btn { justify-self: start; padding: 0; font-size: 12px; }
+.pay__chip:disabled { opacity: .45; cursor: not-allowed; }
+.pay__chip small { display: block; font-size: 11px; color: var(--muted); font-weight: 600; }
+.pay__chip--credito .i { color: #0e6b37; }
+.pay__chip--credito.is-sug { border-color: #0e6b37; background: #f2faf5; }
+.pay__note { margin: -4px 0 0; font-size: 12px; color: var(--muted); }
+.cad-form { display: grid; gap: 12px; }
+.cad-form .seg { justify-self: start; }
+.cad-form__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; }
+.cad-form > .btn { justify-self: start; }
+.cred-total { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: #0e6b37; }
+.cred-total .i { width: 18px; height: 18px; }
+.cli-row summary, .forn-row summary { grid-template-columns: minmax(0, 1fr) auto 20px; }
+.cli-row__nome { display: flex; flex-direction: column; min-width: 0; }
+.cli-row__nome small { font-size: 12px; }
+.cli-row__cred { display: grid; justify-items: end; line-height: 1.2; }
+.cli-row__cred small { font-size: 11px; color: var(--muted); }
+.cli-row__cred.has b { color: #0e6b37; }
+.ajuste { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; margin: 14px 0; }
+.ajuste input:not([type]) , .ajuste input[name=motivo] { height: 38px; border-radius: 9px; border: 1px solid var(--line); padding: 0 10px; font-size: 14px; width: 100%; }
+.ajuste .money-input input { height: 38px; border-radius: 9px; border: 1px solid var(--line); padding-left: 34px; font-size: 14px; width: 100%; }
+.ajuste .money-input span { font-size: 14px; left: 10px; }
+.ext__t { font-size: 13px; color: var(--muted); margin: 6px 0; }
+.forn-obs { margin: 0 0 10px; font-size: 13px; }
+.entrada { display: grid; gap: 14px; }
+.entrada__top { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 180px; gap: 14px; align-items: start; }
+.entrada__top .field { margin: 0; }
+.entrada__top select, .entrada__top input { height: 46px; border-radius: 12px; border: 1px solid var(--line); padding: 0 12px; font-size: 15px; background: #fff; width: 100%; }
+.ent-newforn { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; padding: 0; font-size: 13px; font-weight: 600; color: var(--primary); text-decoration: none; }
+.ent-newforn .i { width: 14px; height: 14px; }
+.entrada__foot { display: flex; justify-content: flex-end; gap: 12px; align-items: center; }
+.entrada .pdv__table tfoot td { font-weight: 700; border-top: 2px solid var(--foreground); border-bottom: 0; }
+@media (max-width: 760px) { .entrada__top { grid-template-columns: 1fr; } .ajuste { grid-template-columns: 1fr 1fr; } .ajuste input[name=motivo] { grid-column: 1 / -1; order: -1; } }.ent-newforn, .cli-new { align-self: flex-start; }

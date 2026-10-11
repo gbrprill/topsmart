@@ -14,8 +14,10 @@
   };
   const REMOTE = location.protocol.startsWith("http");
 
-  const FORMAS = { dinheiro: "Dinheiro", pix: "Pix", credito: "Crédito", debito: "Débito", fiado: "Fiado" };
-  const FORMA_IC = { dinheiro: "i-cash", pix: "i-pix", credito: "i-card", debito: "i-card", fiado: "i-clock" };
+  const FORMAS = { dinheiro: "Dinheiro", pix: "Pix", credito: "Cartão crédito", debito: "Cartão débito", fiado: "Fiado", credito_loja: "Crédito na loja" };
+  const FORMA_IC = { dinheiro: "i-cash", pix: "i-pix", credito: "i-card", debito: "i-card", fiado: "i-clock", credito_loja: "i-wallet" };
+  // saldo de crédito do cliente cadastrado no balcão (0,00 por padrão)
+  const saldoCredito = (c) => (c?.id ? (setup?.clientes || []).find((x) => x.id === c.id)?.credito || 0 : 0);
   const parseMoney = (v) => {
     const s = String(v ?? "").trim();
     if (!s) return 0;
@@ -84,6 +86,8 @@
     if (f.credito) linhas.push(`Crédito: ${money(f.credito)}`);
     if (f.debito) linhas.push(`Débito: ${money(f.debito)}`);
     if (f.fiado) linhas.push(`Fiado (a receber): ${money(f.fiado)}`);
+    if (f.credito_loja < 0) linhas.push(`Crédito gerado para clientes: ${money(-f.credito_loja)}`);
+    if (f.credito_loja > 0) linhas.push(`Pago com crédito da loja: ${money(f.credito_loja)}`);
     if (r.devolvido) linhas.push(`Devoluções: -${money(r.devolvido)}`);
     if (r.sangrias) linhas.push(`Retiradas: -${money(r.sangrias)}`);
     if (r.suprimentos) linhas.push(`Reforços: ${money(r.suprimentos)}`);
@@ -285,7 +289,9 @@
       </form>`;
     }
     if (sale.cliente) {
-      return `<div class="cli is-set"><div><b>${esc(sale.cliente.nome)}</b>${sale.cliente.tipo === "lojista" ? ' <span class="tag tag--pro">Lojista</span>' : ""}<small class="muted">${esc([sale.cliente.doc, sale.cliente.telefone].filter(Boolean).join(" · ")) || "sem documento"}</small></div><button class="text-btn" data-pdv-cli-clear>Trocar</button></div>`;
+      const cr = saldoCredito(sale.cliente);
+      return `<div class="cli is-set"><div><b>${esc(sale.cliente.nome)}</b>${sale.cliente.tipo === "lojista" ? ' <span class="tag tag--pro">Lojista</span>' : ""}<small class="muted">${esc([sale.cliente.doc, sale.cliente.telefone].filter(Boolean).join(" · ")) || "sem documento"}</small>
+        ${sale.cliente.id ? `<small class="cli__credito ${cr > 0 ? "has" : ""}">${icon("i-wallet")}Crédito na loja: <b class="num">${money(cr)}</b></small>` : `<small class="muted">Sem cadastro: não acumula crédito</small>`}</div><button class="text-btn" data-pdv-cli-clear>Trocar</button></div>`;
     }
     return `<div class="cli"><input id="pdv-cli" type="search" autocomplete="off" placeholder="Ao consumidor" aria-label="Cliente"><ul class="pdv__results" id="pdv-cli-results" role="listbox" hidden></ul></div>
       <button type="button" class="text-btn cli-new" data-cli-new>${icon("i-plus")}Cadastrar cliente novo</button>`;
@@ -310,10 +316,14 @@
     }
     return `
       <div class="field"><span class="field__label">Cliente</span>${clienteHTML()}</div>
-      <label class="field"><span>Vendedor</span>
+      <div class="field"><label class="field__label" for="pdv-vend">Vendedor</label>
         ${vend.length ? `<select id="pdv-vend" data-pdv-vend><option value="">Escolha quem atendeu</option>${vend.map((v) => `<option value="${esc(v.id)}" ${v.id === sale.vendedorId ? "selected" : ""}>${esc(v.nome)}</option>`).join("")}</select><span class="err" id="pdv-vend-err"></span>`
-          : `<span class="notice">Nenhum vendedor nesta loja. <a href="#/admin?aba=equipe">Cadastrar vendedores</a></span>`}
-      </label>
+          : `<form class="vend-rapido" id="vend-rapido" novalidate>
+              <p>Nenhum vendedor cadastrado nesta loja. Cadastre quem está atendendo:</p>
+              <div class="vend-rapido__row"><input name="nome" id="pdv-vend" maxlength="60" placeholder="Nome do vendedor" aria-label="Nome do vendedor" autocomplete="off"><button class="btn btn--primary btn--sm">Adicionar</button></div>
+              <a class="text-btn" href="#/admin?aba=equipe">Gerenciar lojas e vendedores</a>
+            </form>`}
+      </div>
       <dl class="totals">${totais}</dl>
       <button class="btn ${tipo === "venda" ? "btn--primary" : "btn--dark"} btn--block" data-pdv-pagar ${prontoParaPagar() ? "" : "disabled"}>${botao}<kbd>F9</kbd></button>
       ${sale.itens.length || sale.devolvidos.length ? `<div class="pdv__side-actions">${tipo === "venda" ? `<button class="text-btn" data-pdv-hold>${icon("i-pause")}Deixar em espera</button>` : "<span></span>"}<button class="text-btn" data-pdv-clear>Limpar</button></div>` : ""}`;
@@ -325,11 +335,17 @@
     const troco = Math.max(0, r2(pago - total));
     const devol = devolvendo();
     const formas = Object.entries(FORMAS).filter(([f]) => !(devol && f === "fiado"));
+    const temCad = !!sale.cliente?.id, saldoCli = saldoCredito(sale.cliente);
     const titulo = sale.tipo === "troca" ? (devol ? "Diferença a devolver" : "Diferença a cobrar") : devol ? "Valor a devolver" : "Total";
     return `
       <div class="pay__head"><button class="text-btn" data-pdv-voltar>${icon("i-left")}Itens</button><span class="pay__total num"><small>${titulo}</small>${money(total)}</span></div>
       <p class="muted pay__hint">${devol ? "Como o valor volta para o cliente?" : "Escolha a forma de pagamento. Para dividir, adicione outra forma."}</p>
-      <div class="pay__quick">${formas.map(([f, n]) => `<button class="pay__chip" data-pdv-forma="${f}">${icon(FORMA_IC[f])}${n}</button>`).join("")}</div>
+      <div class="pay__quick">${formas.map(([f, n]) => {
+        if (f !== "credito_loja") return `<button class="pay__chip" data-pdv-forma="${f}">${icon(FORMA_IC[f])}${n}</button>`;
+        const off = !temCad || (!devol && saldoCli <= 0);
+        return `<button class="pay__chip pay__chip--credito ${devol ? "is-sug" : ""}" data-pdv-forma="credito_loja" ${off ? "disabled" : ""} title="${!temCad ? "Cadastre o cliente para usar crédito" : ""}">${icon("i-wallet")}${devol ? "Gerar crédito" : `Crédito <small class="num">${money(saldoCli)}</small>`}</button>`;
+      }).join("")}</div>
+      ${!temCad ? `<p class="pay__note">Para ${devol ? "gerar" : "usar"} crédito na loja, escolha ou cadastre o cliente.</p>` : devol ? `<p class="pay__note">O valor vira crédito para ${esc(sale.cliente.nome)} usar em outra compra.</p>` : ""}
       <div class="pay__rows">${sale.pagamentos.map((p, i) => `
         <div class="pay__row">
           <span class="pay__forma">${icon(FORMA_IC[p.forma])}${FORMAS[p.forma]}</span>
@@ -404,9 +420,12 @@
       nome: u.type === "lojista" ? (u.fantasia || u.razao) : u.name, doc: u.cnpj || u.cpf || "", telefone: u.phone || "", tipo: u.type === "lojista" ? "lojista" : "cliente",
     }));
     const add = (c) => { if (c?.nome && !list.some((x) => norm(x.nome) === norm(c.nome) && (x.doc || "") === (c.doc || ""))) list.push(c); };
-    (setup?.clientes || []).forEach(add);
-    store.get("ts_pdv_clientes", []).forEach(add);
-    return list;
+    // clientes cadastrados no balcão vêm primeiro (têm id e crédito)
+    const cad = (setup?.clientes || []).map((c) => ({ id: c.id, nome: c.nome, doc: c.doc, telefone: c.telefone, tipo: c.tipo, credito: c.credito || 0 }));
+    const out = [...cad];
+    list.forEach((c) => { if (!out.some((x) => norm(x.nome) === norm(c.nome) && (x.doc || "") === (c.doc || ""))) out.push(c); });
+    store.get("ts_pdv_clientes", []).forEach((c) => { if (!out.some((x) => norm(x.nome) === norm(c.nome))) out.push(c); });
+    return out;
   }
   function renderCliResults(q) {
     const ul = $("#pdv-cli-results");
@@ -415,7 +434,7 @@
     if (!n) { ul.hidden = true; return; }
     const found = clientesConhecidos().filter((c) => norm(`${c.nome} ${c.doc} ${c.telefone}`).includes(n) || (T().digits(q).length >= 3 && T().digits(`${c.doc}${c.telefone}`).includes(T().digits(q)))).slice(0, 6);
     ul.hidden = false;
-    ul.innerHTML = found.map((c, i) => `<li role="option" data-pdv-cli="${i}"><span class="res__name"><b>${esc(c.nome)}</b><small class="muted">${esc([c.doc, c.telefone].filter(Boolean).join(" · "))}</small></span>${c.tipo === "lojista" ? '<span class="tag tag--pro">Lojista</span>' : ""}</li>`).join("")
+    ul.innerHTML = found.map((c, i) => `<li role="option" data-pdv-cli="${i}"><span class="res__name"><b>${esc(c.nome)}</b><small class="muted">${esc([c.doc, c.telefone].filter(Boolean).join(" · "))}${c.credito ? ` · crédito ${money(c.credito)}` : ""}</small></span>${c.tipo === "lojista" ? '<span class="tag tag--pro">Lojista</span>' : ""}</li>`).join("")
       + `<li role="option" data-cli-new><span class="res__name"><b>${icon("i-plus")} Cadastrar “${esc(q.trim())}”</b><small class="muted">Cliente novo, com CPF ou CNPJ e WhatsApp</small></span></li>`
       + `<li role="option" data-pdv-cli-new><span class="res__name"><b>Usar só o nome</b><small class="muted">Sem cadastro</small></span></li>`;
     ul._found = found;
@@ -449,7 +468,7 @@
       const { cliente, existente } = await api("r=clientes", "POST", { nome, doc, telefone: tel, tipo: f.tipo.value });
       setup.clientes = [cliente, ...(setup.clientes || []).filter((x) => x.id !== cliente.id)];
       if (existente) T().toast(`${cliente.nome} já estava cadastrado. Usando o cadastro existente.`);
-      setCliente({ nome: cliente.nome, doc: cliente.doc, telefone: cliente.telefone, tipo: cliente.tipo });
+      setCliente({ id: cliente.id, nome: cliente.nome, doc: cliente.doc, telefone: cliente.telefone, tipo: cliente.tipo });
     } catch (err) { btn.disabled = false; T().toast(err.message); }
   }
 
@@ -476,6 +495,7 @@
       sale = novaVenda(); saveSale();
       renderPdv();
       mostrarNota(venda);
+      if (venda.creditoMov) loadSetup(true).catch(() => {}); // atualiza o saldo de crédito dos clientes
     } catch (err) {
       btn.disabled = false;
       const e = $("#pdv-pay-err"); if (e) e.textContent = err.message; else T().toast(err.message);
@@ -514,6 +534,8 @@
     v.pagamentos.forEach((p) => L.push({ l: FORMAS[p.forma], r: money(p.recebido ?? p.valor) }));
     if (v.troco) L.push({ l: "Troco", r: money(v.troco) });
     if (v.pagamentos.some((p) => p.forma === "fiado")) L.push({ t: "Valor no fiado: a pagar na loja.", a: "c" });
+    if (v.creditoMov > 0) L.push({ t: `Crédito gerado: ${money(v.creditoMov)}`, a: "c", b: 1 });
+    if (v.creditoMov && v.creditoSaldo != null) L.push({ t: `Saldo de crédito na loja: ${money(v.creditoSaldo)}`, a: "c" });
     if (v.obs) L.push({ sep: 1 }, { t: `Obs.: ${v.obs}`, wrap: 1 });
     L.push({ sep: 1 }, { t: "Obrigado pela preferência!", a: "c" }, { t: "Aqui tem inovação!", a: "c" });
     return L;
@@ -663,6 +685,7 @@
             ${stat("Pix", money(f.pix))}
             ${stat("Cartão", money(f.credito + f.debito), `crédito ${money(f.credito)} · débito ${money(f.debito)}`)}
             ${f.fiado ? stat("Fiado a receber", money(f.fiado)) : ""}
+            ${f.credito_loja ? stat(f.credito_loja < 0 ? "Crédito gerado" : "Pago com crédito", money(Math.abs(f.credito_loja)), f.credito_loja < 0 ? "trocas e devoluções" : "não entra na gaveta") : ""}
           </div>
           <div class="caixa__cols">
             <div>
@@ -892,13 +915,220 @@
   }
 
   // ======================================================================
+  // CLIENTES (cadastro do balcão + crédito na loja)
+  // ======================================================================
+  let cliEdit = null;   // null | {} (novo) | cliente (editando)
+  let cliFiltro = "";
+  function viewClientes() {
+    cliEdit = null;
+    return `<div class="admin-head"><div><h1>Clientes</h1><p class="muted">Cadastro do balcão. Todo cliente começa com R$ 0,00 de crédito na loja.</p></div>
+        <button class="btn btn--primary btn--sm" data-cad-cli-new>${icon("i-plus")}Cadastrar cliente</button></div>
+      ${asyncView("cli-root", skel(5), async () => { await loadSetup(true); renderClientes(); })}`;
+  }
+  function cliFormBox() {
+    if (!cliEdit) return "";
+    const c = cliEdit;
+    return `<form class="box cad-form" id="cad-cli-form" novalidate>
+      <div class="box__head"><h2>${c.id ? "Editar cliente" : "Cliente novo"}</h2><button type="button" class="text-btn" data-cad-cli-cancel>Cancelar</button></div>
+      <div class="seg seg--sm" role="radiogroup" aria-label="Tipo">
+        <label><input type="radio" name="tipo" value="cliente" ${c.tipo !== "lojista" ? "checked" : ""}><span>Cliente</span></label>
+        <label><input type="radio" name="tipo" value="lojista" ${c.tipo === "lojista" ? "checked" : ""}><span>Lojista</span></label>
+      </div>
+      <div class="cad-form__grid">
+        <label class="field"><span>Nome ou razão social</span><input name="nome" value="${esc(c.nome || "")}" maxlength="120" required><span class="err"></span></label>
+        <label class="field"><span>CPF ou CNPJ <span class="opt">(opcional)</span></span><input name="doc" value="${esc(c.doc || "")}" inputmode="numeric" data-mask-doc maxlength="18"><span class="err"></span></label>
+        <label class="field"><span>WhatsApp</span><input name="phone" value="${esc(c.telefone || "")}" inputmode="tel" maxlength="16" placeholder="(33) 99999-9999"><span class="err"></span></label>
+      </div>
+      <button class="btn btn--primary">${icon("i-check")}${c.id ? "Salvar" : "Cadastrar"}</button>
+    </form>`;
+  }
+  function renderClientes() {
+    const lista = (setup.clientes || []).filter((c) => !cliFiltro || norm(`${c.nome} ${c.doc} ${c.telefone}`).includes(norm(cliFiltro)) || (T().digits(cliFiltro).length >= 3 && T().digits(`${c.doc}${c.telefone}`).includes(T().digits(cliFiltro))));
+    const totalCredito = (setup.clientes || []).reduce((s, c) => s + (c.credito || 0), 0);
+    paint("cli-root", `
+      ${cliFormBox()}
+      <section class="box">
+        <div class="box__head"><h2>Clientes do balcão <span class="muted">(${(setup.clientes || []).length})</span></h2>
+          ${totalCredito ? `<span class="cred-total">${icon("i-wallet")}Crédito em aberto: <b class="num">${money(totalCredito)}</b></span>` : ""}</div>
+        <input type="search" class="admin-search" id="cli-busca" value="${esc(cliFiltro)}" placeholder="Buscar por nome, CPF, CNPJ ou telefone" aria-label="Buscar cliente">
+        ${lista.length ? `<div class="olist">${lista.map((c) => `
+          <details class="hist cli-row">
+            <summary>
+              <span class="cli-row__nome"><b>${esc(c.nome)}</b>${c.tipo === "lojista" ? ' <span class="tag tag--pro">Lojista</span>' : ""}<small class="muted">${esc([c.doc, c.telefone].filter(Boolean).join(" · ")) || "sem documento"}</small></span>
+              <span class="cli-row__cred ${c.credito > 0 ? "has" : ""}"><small>Crédito</small><b class="num">${money(c.credito || 0)}</b></span>
+              ${icon("i-down")}
+            </summary>
+            <div class="hist__body">
+              <div class="hist__actions">
+                <button class="btn btn--ghost btn--sm" data-cad-cli-edit="${esc(c.id)}">${icon("i-edit")}Editar</button>
+                ${T().digits(c.telefone).length >= 10 ? `<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="https://wa.me/55${T().digits(c.telefone).replace(/^55/, "")}?text=${encodeURIComponent(`Olá${c.nome ? `, ${c.nome.split(" ")[0]}` : ""}! Aqui é da Top Smart. Você tem ${money(c.credito || 0)} de crédito na loja.`)}">${icon("i-wa")}Avisar saldo</a>` : ""}
+              </div>
+              <form class="ajuste" data-cad-ajuste="${esc(c.id)}" novalidate>
+                <span class="money-input"><span>R$</span><input name="valor" inputmode="decimal" placeholder="0,00" aria-label="Valor do ajuste"></span>
+                <input name="motivo" maxlength="120" placeholder="Motivo (ex.: crédito de garantia)" aria-label="Motivo">
+                <button class="btn btn--ghost btn--sm" name="op" value="mais">+ Dar crédito</button>
+                <button class="btn btn--ghost btn--sm" name="op" value="menos">- Tirar crédito</button>
+              </form>
+              <h3 class="ext__t">Extrato do crédito</h3>
+              ${(c.extrato || []).length ? `<ul class="mlist">${c.extrato.map((m) => `<li><span class="num">${dia(m.em)}</span><span>${esc(m.motivo)}${m.ref ? ` · ${esc(m.ref)}` : ""}</span><b class="num ${m.valor < 0 ? "neg" : "pos"}">${m.valor > 0 ? "+" : "-"}${money(Math.abs(m.valor))}</b></li>`).join("")}</ul>` : '<p class="muted">Nenhum movimento ainda.</p>'}
+            </div>
+          </details>`).join("")}</div>` : `<div class="empty">${cliFiltro ? "Nenhum cliente encontrado." : "Nenhum cliente cadastrado no balcão ainda. Cadastre aqui ou na hora da venda."}</div>`}
+      </section>
+      ${T().adminUsersHTML()}`);
+  }
+
+  // ======================================================================
+  // FORNECEDORES
+  // ======================================================================
+  let forn = null;        // { fornecedores, compras }
+  let fornEdit = null;
+  async function loadForn(force) { if (!forn || force) forn = await api("r=fornecedores"); return forn; }
+  function viewFornecedores() {
+    fornEdit = null;
+    return `<div class="admin-head"><div><h1>Fornecedores</h1><p class="muted">De quem a loja compra. Cada entrada de estoque fica no histórico do fornecedor.</p></div>
+        <div class="rep__tools"><a class="btn btn--ghost btn--sm" href="#/admin?aba=entrada">${icon("i-download")}Registrar entrada</a><button class="btn btn--primary btn--sm" data-forn-new>${icon("i-plus")}Novo fornecedor</button></div></div>
+      ${asyncView("forn-root", skel(4), async () => { await loadForn(true); renderFornecedores(); })}`;
+  }
+  function fornFormBox() {
+    if (!fornEdit) return "";
+    const x = fornEdit;
+    return `<form class="box cad-form" id="forn-form" novalidate>
+      <div class="box__head"><h2>${x.id ? "Editar fornecedor" : "Novo fornecedor"}</h2><button type="button" class="text-btn" data-forn-cancel>Cancelar</button></div>
+      <div class="cad-form__grid">
+        <label class="field"><span>Nome</span><input name="nome" value="${esc(x.nome || "")}" maxlength="120" required placeholder="Ex.: Diamonds Parts"><span class="err"></span></label>
+        <label class="field"><span>CNPJ ou CPF <span class="opt">(opcional)</span></span><input name="doc" value="${esc(x.doc || "")}" inputmode="numeric" data-mask-doc maxlength="18"></label>
+        <label class="field"><span>WhatsApp ou telefone</span><input name="phone" value="${esc(x.telefone || "")}" inputmode="tel" maxlength="16"></label>
+        <label class="field"><span>Contato <span class="opt">(opcional)</span></span><input name="contato" value="${esc(x.contato || "")}" maxlength="80" placeholder="Nome de quem atende"></label>
+        <label class="field"><span>Cidade <span class="opt">(opcional)</span></span><input name="cidade" value="${esc(x.cidade || "")}" maxlength="80"></label>
+        <label class="field"><span>Observação <span class="opt">(opcional)</span></span><input name="obs" value="${esc(x.obs || "")}" maxlength="300" placeholder="Prazo, condições, chave Pix..."></label>
+      </div>
+      <button class="btn btn--primary">${icon("i-check")}${x.id ? "Salvar" : "Cadastrar fornecedor"}</button>
+    </form>`;
+  }
+  function renderFornecedores() {
+    const { fornecedores, compras } = forn;
+    paint("forn-root", `
+      ${fornFormBox()}
+      ${fornecedores.length ? `<div class="olist">${fornecedores.map((x) => {
+        const cs = compras.filter((c) => c.fornecedor.id === x.id);
+        const total = cs.reduce((s, c) => s + c.total, 0);
+        return `<details class="hist forn-row">
+          <summary>
+            <span class="cli-row__nome"><b>${esc(x.nome)}</b><small class="muted">${esc([x.doc, x.telefone, x.cidade].filter(Boolean).join(" · ")) || "sem dados de contato"}</small></span>
+            <span class="cli-row__cred"><small>${cs.length} ${cs.length === 1 ? "compra" : "compras"}</small><b class="num">${money(total)}</b></span>
+            ${icon("i-down")}
+          </summary>
+          <div class="hist__body">
+            ${x.contato || x.obs ? `<p class="muted forn-obs">${esc([x.contato && `Contato: ${x.contato}`, x.obs].filter(Boolean).join(" · "))}</p>` : ""}
+            <div class="hist__actions">
+              <a class="btn btn--primary btn--sm" href="#/admin?aba=entrada&forn=${encodeURIComponent(x.id)}">${icon("i-download")}Nova entrada deste fornecedor</a>
+              ${T().digits(x.telefone).length >= 10 ? `<a class="btn btn--wa btn--sm" target="_blank" rel="noopener" href="https://wa.me/55${T().digits(x.telefone).replace(/^55/, "")}">${icon("i-wa")}WhatsApp</a>` : ""}
+              <button class="btn btn--ghost btn--sm" data-forn-edit="${esc(x.id)}">${icon("i-edit")}Editar</button>
+              <button class="btn btn--ghost btn--sm" data-forn-del="${esc(x.id)}">${icon("i-trash")}Remover</button>
+            </div>
+            <h3 class="ext__t">Compras</h3>
+            ${cs.length ? `<ul class="mlist">${cs.map((c) => `<li><span class="num">${new Date(`${c.data}T12:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}</span><span>${c.itens.map((it) => `${it.qty}x ${esc(it.name)}`).join(", ")}${c.nota ? ` · nota ${esc(c.nota)}` : ""}</span><b class="num">${money(c.total)}</b></li>`).join("")}</ul>` : '<p class="muted">Nenhuma compra registrada.</p>'}
+          </div>
+        </details>`;
+      }).join("")}</div>` : (fornEdit ? "" : `<div class="empty">Nenhum fornecedor ainda.<br><button class="btn btn--primary btn--sm" data-forn-new style="margin-top:12px">${icon("i-plus")}Cadastrar o primeiro</button></div>`)}`);
+  }
+
+  // ======================================================================
+  // ENTRADA DE ESTOQUE (compra de fornecedor)
+  // ======================================================================
+  let ent = store.get("ts_entrada", null) || { fornecedorId: "", nota: "", data: "", itens: [], atualizaCusto: true };
+  const saveEnt = () => store.set("ts_entrada", ent);
+  let entResults = [], entIdx = 0;
+  function viewEntrada() {
+    const params = new URLSearchParams(location.hash.split("?")[1] || "");
+    if (params.get("forn")) ent.fornecedorId = params.get("forn");
+    return `<div class="admin-head"><div><h1>Entrada de estoque</h1><p class="muted">Lance o que chegou do fornecedor. O estoque e o custo dos produtos são atualizados.</p></div></div>
+      ${asyncView("ent-root", skel(4), async () => { await loadForn(true); renderEntrada(); })}`;
+  }
+  function renderEntrada() {
+    const { fornecedores, compras } = forn;
+    const total = ent.itens.reduce((s, it) => s + it.qty * it.custo, 0);
+    paint("ent-root", `
+      <form class="box entrada" id="ent-form" novalidate>
+        <div class="entrada__top">
+          <div class="field"><label class="field__label" for="ent-forn">Fornecedor</label>
+            ${fornecedores.length ? `<select id="ent-forn" name="forn" data-ent="fornecedorId"><option value="">Escolha o fornecedor</option>${fornecedores.map((x) => `<option value="${esc(x.id)}" ${x.id === ent.fornecedorId ? "selected" : ""}>${esc(x.nome)}</option>`).join("")}</select>` : ""}
+            <a class="text-btn ent-newforn" href="#/admin?aba=fornecedores">${icon("i-plus")}${fornecedores.length ? "Cadastrar outro fornecedor" : "Cadastre um fornecedor primeiro"}</a></div>
+          <label class="field"><span>Nota ou pedido nº <span class="opt">(opcional)</span></span><input data-ent="nota" value="${esc(ent.nota)}" maxlength="40"></label>
+          <label class="field"><span>Data da compra</span><input type="date" data-ent="data" value="${esc(ent.data || iso(new Date()))}"></label>
+        </div>
+        <div class="pdv__search">
+          ${icon("i-search")}
+          <input id="ent-q" type="search" autocomplete="off" placeholder="Produto que chegou: nome ou código" aria-label="Buscar produto" aria-controls="ent-res">
+          <ul class="pdv__results" id="ent-res" role="listbox" hidden></ul>
+        </div>
+        ${ent.itens.length ? `<div class="table-wrap"><table class="pdv__table">
+          <thead><tr><th>Produto</th><th class="r">Estoque hoje</th><th class="r">Qtd que chegou</th><th class="r">Custo unitário</th><th class="r">Subtotal</th><th></th></tr></thead>
+          <tbody>${ent.itens.map((it, i) => { const p = T().prodBy(it.productId); return `<tr>
+            <td><b>${esc(it.name)}${it.code ? ` - ${esc(it.code)}` : ""}</b></td>
+            <td class="r num">${p ? p.stock : "-"}</td>
+            <td class="r"><input class="cell-in cell-in--qty num" type="number" min="1" value="${it.qty}" data-ent-item="${i}" data-field="qty" aria-label="Quantidade"></td>
+            <td class="r"><input class="cell-in num" inputmode="decimal" value="${fmtMoneyInput(it.custo)}" data-ent-item="${i}" data-field="custo" aria-label="Custo unitário"></td>
+            <td class="r num"><b>${money(it.qty * it.custo)}</b></td>
+            <td class="r"><button type="button" class="icon-btn icon-btn--sm" data-ent-del="${i}" aria-label="Remover">${icon("i-trash")}</button></td>
+          </tr>`; }).join("")}</tbody>
+          <tfoot><tr><td colspan="4">Total da compra</td><td class="r num"><b>${money(total)}</b></td><td></td></tr></tfoot>
+        </table></div>` : vazio("i-download", "Busque os produtos que chegaram e informe a quantidade e o custo de cada um.")}
+        <label class="check"><input type="checkbox" data-ent="atualizaCusto" ${ent.atualizaCusto ? "checked" : ""}> Atualizar o preço de custo dos produtos com o valor desta compra</label>
+        <span class="err" id="ent-err"></span>
+        <div class="entrada__foot"><button type="button" class="text-btn" data-ent-clear ${ent.itens.length ? "" : "hidden"}>Limpar</button><button class="btn btn--primary" ${ent.itens.length ? "" : "disabled"}>${icon("i-check")}Registrar entrada</button></div>
+      </form>
+      <section class="box">
+        <div class="box__head"><h2>Últimas entradas</h2></div>
+        ${compras.length ? `<div class="olist">${compras.slice(0, 40).map((c) => `
+          <details class="hist">
+            <summary><span class="num">${new Date(`${c.data}T12:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}</span><span class="hist__when"><b>${esc(c.fornecedor.nome)}</b> · ${c.itens.reduce((n, it) => n + it.qty, 0)} itens${c.nota ? ` · nota ${esc(c.nota)}` : ""}</span><span class="num"><b>${money(c.total)}</b></span><span></span>${icon("i-down")}</summary>
+            <div class="hist__body"><ul class="mlist">${c.itens.map((it) => `<li><span class="num">${it.qty}x</span><span>${esc(it.name)}${it.code ? ` - ${esc(it.code)}` : ""} · ${money(it.custo)} cada</span><b class="num">${money(it.sub)}</b></li>`).join("")}</ul></div>
+          </details>`).join("")}</div>` : '<p class="muted">As compras registradas aparecem aqui e no histórico de cada fornecedor.</p>'}
+      </section>`);
+  }
+  function entBuscar(q) {
+    entResults = buscar(q); entIdx = 0;
+    const ul = $("#ent-res"); if (!ul) return;
+    ul.hidden = !q.trim();
+    ul.innerHTML = entResults.length ? entResults.map((p, i) => `<li role="option" class="${i === entIdx ? "is-sel" : ""}" data-ent-add="${esc(p.id)}"><span class="row__thumb">${T().media(p)}</span><span class="res__name"><b>${esc(p.name)}</b><small class="muted">${esc(p.code)} · estoque ${p.stock}</small></span><span class="num res__price">${money(p.cost || 0)}</span></li>`).join("")
+      : `<li class="res__none">Nada encontrado. Cadastre o produto em Produtos primeiro.</li>`;
+  }
+  function entAdd(id) {
+    const p = T().prodBy(id); if (!p) return;
+    const ja = ent.itens.find((it) => it.productId === p.id);
+    if (ja) ja.qty++; else ent.itens.push({ productId: p.id, name: p.name, code: p.code, qty: 1, custo: p.cost || 0 });
+    saveEnt(); renderEntrada();
+    const n = $$("[data-ent-item][data-field=qty]").at(ent.itens.findIndex((it) => it.productId === p.id));
+    n?.select();
+  }
+
+  // ======================================================================
   // EVENTOS
   // ======================================================================
   document.addEventListener("click", async (e) => {
-    const t = e.target.closest("button, a, li[data-pdv-add], li[data-pdv-cli], li[data-pdv-cli-new], li[data-cli-new]");
+    const t = e.target.closest("button, a, li[data-pdv-add], li[data-pdv-cli], li[data-pdv-cli-new], li[data-cli-new], li[data-ent-add]");
     if (!t) return;
     const d = t.dataset;
     if ("pdvRetry" in d) return T().router();
+    // ---- clientes ----
+    if ("cadCliNew" in d) { cliEdit = {}; renderClientes(); $("#cad-cli-form [name=nome]")?.focus(); return; }
+    if ("cadCliCancel" in d) { cliEdit = null; return renderClientes(); }
+    if (d.cadCliEdit) { cliEdit = setup.clientes.find((x) => x.id === d.cadCliEdit) || null; renderClientes(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+    // ---- fornecedores ----
+    if ("fornNew" in d) { fornEdit = {}; renderFornecedores(); $("#forn-form [name=nome]")?.focus(); return; }
+    if ("fornCancel" in d) { fornEdit = null; return renderFornecedores(); }
+    if (d.fornEdit) { fornEdit = forn.fornecedores.find((x) => x.id === d.fornEdit) || null; renderFornecedores(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+    if (d.fornDel) {
+      const x = forn.fornecedores.find((y) => y.id === d.fornDel);
+      if (!x || !confirm(`Remover ${x.nome}? O histórico de compras continua guardado.`)) return;
+      try { const r = await api("r=fornecedores", "PUT", { fornecedores: forn.fornecedores.filter((y) => y.id !== x.id) }); forn.fornecedores = r.fornecedores; T().toast("Fornecedor removido"); renderFornecedores(); } catch (err) { T().toast(err.message); }
+      return;
+    }
+    // ---- entrada de estoque ----
+    if (d.entAdd) { const q = $("#ent-q"); if (q) q.value = ""; return entAdd(d.entAdd); }
+    if (d.entDel !== undefined) { ent.itens.splice(+d.entDel, 1); saveEnt(); return renderEntrada(); }
+    if ("entClear" in d) { if (confirm("Limpar os itens desta entrada?")) { ent.itens = []; saveEnt(); renderEntrada(); } return; }
     // ---- venda balcão ----
     if (d.pdvAdd) return addProduto(d.pdvAdd, t.closest(".pdv__results")?.id.replace("pdv-res-", "") || "itens");
     if (d.pdvDel) { const [alvo, i] = d.pdvDel.split(":"); sale[alvo].splice(+i, 1); saveSale(); return renderPdv(); }
@@ -920,7 +1150,9 @@
     if ("pdvPagar" in d) return irPagamento();
     if ("pdvVoltar" in d) { sale.etapa = "itens"; saveSale(); return renderPdv(); }
     if (d.pdvForma) {
-      const falta = Math.max(0, Math.round((aPagar() - totalPago()) * 100) / 100);
+      let falta = Math.max(0, Math.round((aPagar() - totalPago()) * 100) / 100);
+      // usar crédito: no máximo o saldo que o cliente tem
+      if (d.pdvForma === "credito_loja" && !devolvendo()) falta = Math.min(falta, Math.max(0, saldoCredito(sale.cliente) - (sale.pagamentos.find((p) => p.forma === "credito_loja")?.valor || 0)));
       const ja = sale.pagamentos.find((p) => p.forma === d.pdvForma);
       if (ja) ja.valor = Math.round((ja.valor + falta) * 100) / 100;
       else sale.pagamentos.push({ forma: d.pdvForma, valor: falta || (sale.pagamentos.length ? 0 : aPagar()) });
@@ -995,6 +1227,8 @@
     // troca de mesmo valor: não há o que cobrar nem devolver
     if (sale.tipo === "troca" && aPagar() === 0) { sale.pagamentos = []; saveSale(); return concluir(); }
     sale.etapa = "pagamento";
+    // a loja não devolve dinheiro: com cliente cadastrado, a devolução já sugere virar crédito
+    if (devolvendo() && sale.cliente?.id && !sale.pagamentos.length) sale.pagamentos = [{ forma: "credito_loja", valor: aPagar() }];
     saveSale(); renderPdv();
   }
 
@@ -1008,6 +1242,8 @@
     const t = e.target;
     if (t.classList.contains("pdv-q")) { searchAlvo = t.dataset.alvo; results = buscar(t.value); resultIdx = 0; renderResults(); return; }
     if (t.dataset.maskDoc !== undefined) { t.value = fmtDoc(t.value); return; }
+    if (t.id === "ent-q") return entBuscar(t.value);
+    if (t.id === "cli-busca") { cliFiltro = t.value; const pos = t.selectionStart; renderClientes(); const n = $("#cli-busca"); n?.focus(); n?.setSelectionRange(pos, pos); return; }
     if (t.id === "pdv-cli") return renderCliResults(t.value);
     if (t.dataset.pdvPay !== undefined) {
       sale.pagamentos[+t.dataset.pdvPay].valor = parseMoney(t.value); saveSale();
@@ -1027,6 +1263,13 @@
     const t = e.target;
     if (t.dataset.pdvLoja !== undefined) { store.set("ts_loja", t.value); sale.vendedorId = ""; saveSale(); return T().router(); }
     if (t.dataset.pdvVend !== undefined) { sale.vendedorId = t.value; store.set("ts_pdv_vendedor", t.value); saveSale(); const er = $("#pdv-vend-err"); if (er) er.textContent = ""; return; }
+    if (t.dataset.ent !== undefined) { ent[t.dataset.ent] = t.type === "checkbox" ? t.checked : t.value; saveEnt(); return; }
+    if (t.dataset.entItem !== undefined) {
+      const it = ent.itens[+t.dataset.entItem];
+      if (t.dataset.field === "qty") it.qty = Math.max(1, parseInt(t.value, 10) || 1);
+      if (t.dataset.field === "custo") it.custo = Math.max(0, parseMoney(t.value));
+      saveEnt(); return renderEntrada();
+    }
     if (t.dataset.pdvItem !== undefined) {
       const [alvo, i] = t.dataset.pdvItem.split(":");
       const it = sale[alvo][+i], f = t.dataset.field;
@@ -1043,6 +1286,8 @@
   });
 
   document.addEventListener("keydown", (e) => {
+    if (e.target.id === "ent-q" && e.key === "Enter") { e.preventDefault(); if (entResults[0]) { e.target.value = ""; entAdd(entResults[0].id); } return; }
+    if (e.target.closest?.("#ent-form") && e.key === "Enter" && e.target.tagName === "INPUT") { e.preventDefault(); e.target.dispatchEvent(new Event("change", { bubbles: true })); return; }
     if (!location.hash.includes("aba=balcao")) return;
     if (document.querySelector("dialog[open]")) return;
     if (e.key === "F2") { e.preventDefault(); $(".pdv-q")?.focus(); return; }
@@ -1069,6 +1314,71 @@
   document.addEventListener("submit", async (e) => {
     const f = e.target;
     if (f.id === "cli-form") { e.preventDefault(); return salvarClienteNovo(f); }
+    if (f.id === "cad-cli-form") {
+      e.preventDefault();
+      const nome = f.nome.value.trim(), doc = f.doc.value.trim(), tel = f.phone.value.trim(), dig = T().digits(doc);
+      T().setErr(f, "nome", nome.length < 2 ? "Informe o nome" : "");
+      T().setErr(f, "doc", !dig || dig.length === 11 || dig.length === 14 ? "" : "CPF tem 11 dígitos e CNPJ tem 14");
+      T().setErr(f, "phone", !tel || T().digits(tel).length >= 10 ? "" : "WhatsApp incompleto");
+      if (nome.length < 2 || (dig && dig.length !== 11 && dig.length !== 14) || (tel && T().digits(tel).length < 10)) return;
+      const body = { nome, doc, telefone: tel, tipo: f.tipo.value };
+      try {
+        const r = cliEdit?.id ? await api(`r=clientes&id=${encodeURIComponent(cliEdit.id)}`, "PUT", body) : await api("r=clientes", "POST", body);
+        if (r.existente) T().toast(`${r.cliente.nome} já estava cadastrado (mesmo CPF/CNPJ ou telefone).`); else T().toast(cliEdit?.id ? "Cliente atualizado" : "Cliente cadastrado");
+        cliEdit = null; await loadSetup(true); renderClientes();
+      } catch (err) { T().toast(err.message); }
+      return;
+    }
+    if (f.dataset.cadAjuste) {
+      e.preventDefault();
+      const v = parseMoney(f.valor.value);
+      if (!(v > 0)) { f.valor.focus(); return T().toast("Informe o valor"); }
+      const sinal = e.submitter?.value === "menos" ? -1 : 1;
+      try { const r = await api(`r=clientes&acao=credito&id=${encodeURIComponent(f.dataset.cadAjuste)}`, "POST", { valor: sinal * v, motivo: f.motivo.value }); T().toast(`Crédito atualizado: ${money(r.credito)}`); await loadSetup(true); renderClientes(); }
+      catch (err) { T().toast(err.message); }
+      return;
+    }
+    if (f.id === "forn-form") {
+      e.preventDefault();
+      const nome = f.nome.value.trim();
+      T().setErr(f, "nome", nome.length < 2 ? "Informe o nome do fornecedor" : "");
+      if (nome.length < 2) return;
+      const dados = { nome, doc: f.doc.value.trim(), telefone: f.phone.value.trim(), contato: f.contato.value.trim(), cidade: f.cidade.value.trim(), obs: f.obs.value.trim() };
+      const lista = fornEdit?.id ? forn.fornecedores.map((x) => (x.id === fornEdit.id ? { ...x, ...dados } : x)) : [{ ...dados }, ...forn.fornecedores];
+      try { const r = await api("r=fornecedores", "PUT", { fornecedores: lista }); forn.fornecedores = r.fornecedores; T().toast(fornEdit?.id ? "Fornecedor atualizado" : "Fornecedor cadastrado"); fornEdit = null; renderFornecedores(); }
+      catch (err) { T().toast(err.message); }
+      return;
+    }
+    if (f.id === "ent-form") {
+      e.preventDefault();
+      const er = $("#ent-err");
+      if (!ent.fornecedorId) { er.textContent = "Escolha o fornecedor"; $("#ent-forn")?.focus(); return; }
+      if (!ent.itens.length) { er.textContent = "Adicione os produtos que chegaram"; return; }
+      const btn = f.querySelector("button.btn--primary"); btn.disabled = true;
+      try {
+        const { compra } = await api("r=compra", "POST", { fornecedorId: ent.fornecedorId, nota: ent.nota, data: ent.data || iso(new Date()), itens: ent.itens, lojaId: lojaId() });
+        // estoque e custo ficam no navegador do admin (produtos ainda são locais)
+        ent.itens.forEach((it) => { const p = T().prodBy(it.productId); if (p) { p.stock += it.qty; if (ent.atualizaCusto && it.custo > 0) p.cost = it.custo; } });
+        T().saveProducts();
+        T().toast(`Entrada registrada: ${compra.itens.reduce((n, it) => n + it.qty, 0)} itens de ${compra.fornecedor.nome}`);
+        ent = { fornecedorId: ent.fornecedorId, nota: "", data: "", itens: [], atualizaCusto: ent.atualizaCusto }; saveEnt();
+        await loadForn(true); renderEntrada();
+      } catch (err) { btn.disabled = false; er.textContent = err.message; }
+      return;
+    }
+    if (f.id === "vend-rapido") {
+      e.preventDefault();
+      const nome = f.nome.value.trim();
+      if (nome.length < 2) { f.nome.focus(); return T().toast("Digite o nome do vendedor"); }
+      try {
+        const s = await api("r=setup", "PUT", { lojas: setup.lojas, vendedores: [...setup.vendedores, { nome, lojaId: lojaId(), ativo: true }] });
+        setup = { ...setup, ...s };
+        sale.vendedorId = s.vendedores.find((v) => v.nome === nome && v.lojaId === lojaId())?.id || "";
+        store.set("ts_pdv_vendedor", sale.vendedorId); saveSale();
+        T().toast(`${nome} cadastrado como vendedor`); renderPdv();
+      } catch (err) { T().toast(err.message); }
+      return;
+    }
     if (f.id === "abrir-form") {
       e.preventDefault();
       const btn = f.querySelector("button"); btn.disabled = true;
@@ -1110,5 +1420,5 @@
     }
   });
 
-  window.TS_EXT = { tabs: { inicio: viewInicio, balcao: viewBalcao, caixa: viewCaixa, relatorios: viewRelatorios, equipe: viewEquipe } };
+  window.TS_EXT = { tabs: { inicio: viewInicio, balcao: viewBalcao, caixa: viewCaixa, relatorios: viewRelatorios, equipe: viewEquipe, clientes: viewClientes, fornecedores: viewFornecedores, entrada: viewEntrada } };
 })();
