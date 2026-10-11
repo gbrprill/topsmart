@@ -108,7 +108,9 @@ const listaChaves = (k) => (Array.isArray(k) ? k : k ? [k] : []);
 async function jaUsou(code, clienteKey) {
   const ks = listaChaves(clienteKey);
   if (!ks.length) return false;
-  const r = await redis("SMISMEMBER", CK.cli(code), ...ks);
+  // também confere o formato antigo (só números ou e-mail, sem prefixo)
+  const todas = [...new Set([...ks, ...ks.map((k) => k.replace(/^(doc|tel|mail):/, ""))])];
+  const r = await redis("SMISMEMBER", CK.cli(code), ...todas);
   return (r || []).some((x) => Number(x) === 1);
 }
 
@@ -117,6 +119,7 @@ export async function consumirCupom(c, clienteKey) {
   const ks = listaChaves(clienteKey);
   if (c.porCliente) {
     if (!ks.length) return { ok: false, error: "Este cupom precisa de cliente identificado (CPF/CNPJ ou telefone)" };
+    if (await jaUsou(c.code, ks)) return { ok: false, error: "Este cliente já usou este cupom" };
     // reserva cada chave; se alguma já existia, desfaz só as que esta chamada criou
     const novos = [];
     for (const k of ks) if (Number(await redis("SADD", CK.cli(c.code), k)) === 1) novos.push(k);
