@@ -71,6 +71,8 @@ export default async function handler(req, res) {
       const subtotal = num(items.reduce((s, it) => s + it.sub, 0));
       let cupom = null;
       if (b.cupom) {
+        // pedido com cupom tem limite próprio (3 por dia por IP): ninguém esgota um cupom limitado com pedidos falsos
+        if (!(await rateLimit(req, "order-cupom", 3, 86400))) return res.status(429).json({ error: "Limite de pedidos com cupom atingido hoje. Fale com a loja pelo WhatsApp." });
         const av = await avaliarCupom(b.cupom, { itens: items, subtotal, canal: "site", tipoCliente: customer.type, clienteKey: chaveCliente(customer) });
         if (!av.ok) return res.status(400).json({ error: `Cupom: ${av.error}` });
         const uso = await consumirCupom(av.cupom, chaveCliente(customer));
@@ -124,7 +126,11 @@ export default async function handler(req, res) {
       const status = (req.body || {}).status;
       if (!STATUSES.includes(status)) return res.status(400).json({ error: "Status inválido" });
       // pedido cancelado devolve o uso do cupom
-      if (status === "CANCELED" && order.status !== "CANCELED" && order.cupom) await liberarCupom(order.cupom.code, order.cupom.clienteKey);
+      // pedido cancelado devolve o uso do cupom uma única vez (reabrir e cancelar de novo não devolve outra vez)
+      if (status === "CANCELED" && order.status !== "CANCELED" && order.cupom && !order.cupom.liberado) {
+        await liberarCupom(order.cupom.code, order.cupom.clienteKey);
+        order.cupom.liberado = true;
+      }
       order.status = status;
       const ver = await saveOrder(order);
       return res.status(200).json({ order: publicOrder(order), ver });

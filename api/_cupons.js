@@ -80,7 +80,7 @@ export async function avaliarCupom(codeRaw, { itens = [], subtotal, canal, tipoC
     const usados = Number(await redis("GET", CK.uso(code))) || 0;
     if (usados >= c.limite) return { ok: false, error: "Este cupom já atingiu o limite de usos" };
   }
-  if (c.porCliente && clienteKey && (await redis("SISMEMBER", CK.cli(code), clienteKey))) return { ok: false, error: "Você já usou este cupom" };
+  if (c.porCliente && (await jaUsou(code, clienteKey))) return { ok: false, error: "Você já usou este cupom" };
   const lado = tipoCliente === "lojista" ? "loj" : "cli";
   const elegiveis = (itens || []).filter((it) => c.produtos?.[it.productId] && c.produtos[it.productId][lado] > 0);
   if (!elegiveis.length) return { ok: false, error: "Nenhum produto do carrinho está nesta promoção" };
@@ -98,20 +98,37 @@ export async function avaliarCupom(codeRaw, { itens = [], subtotal, canal, tipoC
   return { ok: true, cupom: c, desconto, descricao: descreverCupom(c), itensNaPromo: elegiveis.length };
 }
 
-// chave para "um uso por cliente": documento, telefone ou e-mail
-export const chaveCliente = (cli) => soDigitos(cli?.doc) || soDigitos(cli?.telefone || cli?.phone) || String(cli?.email || "").toLowerCase() || "";
+// chaves para "um uso por cliente": documento, telefone e e-mail. Repetir qualquer um deles já conta como o
+// mesmo cliente, então trocar só o CPF (ou só o telefone) não libera um segundo uso.
+export const chaveCliente = (cli) => {
+  const doc = soDigitos(cli?.doc), tel = soDigitos(cli?.telefone || cli?.phone).slice(-11), mail = String(cli?.email || "").trim().toLowerCase();
+  return [doc.length >= 11 && `doc:${doc}`, tel.length >= 10 && `tel:${tel}`, mail.includes("@") && `mail:${mail}`].filter(Boolean);
+};
+const listaChaves = (k) => (Array.isArray(k) ? k : k ? [k] : []);
+async function jaUsou(code, clienteKey) {
+  const ks = listaChaves(clienteKey);
+  if (!ks.length) return false;
+  const r = await redis("SMISMEMBER", CK.cli(code), ...ks);
+  return (r || []).some((x) => Number(x) === 1);
+}
 
 // reserva o uso do cupom (atômico no Redis); devolve erro se acabou ou se o cliente já usou
 export async function consumirCupom(c, clienteKey) {
+  const ks = listaChaves(clienteKey);
   if (c.porCliente) {
-    if (!clienteKey) return { ok: false, error: "Este cupom precisa de cliente identificado" };
-    const novo = await redis("SADD", CK.cli(c.code), clienteKey);
-    if (!novo) return { ok: false, error: "Este cliente já usou este cupom" };
+    if (!ks.length) return { ok: false, error: "Este cupom precisa de cliente identificado (CPF/CNPJ ou telefone)" };
+    // reserva cada chave; se alguma já existia, desfaz só as que esta chamada criou
+    const novos = [];
+    for (const k of ks) if (Number(await redis("SADD", CK.cli(c.code), k)) === 1) novos.push(k);
+    if (novos.length < ks.length) {
+      if (novos.length) await redis("SREM", CK.cli(c.code), ...novos);
+      return { ok: false, error: "Este cliente já usou este cupom" };
+    }
   }
   const n = await redis("INCR", CK.uso(c.code));
   if (c.limite && n > c.limite) {
     await redis("DECR", CK.uso(c.code));
-    if (c.porCliente) await redis("SREM", CK.cli(c.code), clienteKey);
+    if (c.porCliente) await redis("SREM", CK.cli(c.code), ...ks);
     return { ok: false, error: "Este cupom acabou de atingir o limite de usos" };
   }
   return { ok: true };
@@ -121,7 +138,8 @@ export async function consumirCupom(c, clienteKey) {
 export async function liberarCupom(code, clienteKey) {
   const n = await redis("DECR", CK.uso(code));
   if (n < 0) await redis("SET", CK.uso(code), 0);
-  if (clienteKey) await redis("SREM", CK.cli(code), clienteKey);
+  const ks = listaChaves(clienteKey);
+  if (ks.length) await redis("SREM", CK.cli(code), ...ks);
 }
 
 export async function usosDosCupons(cupons) {
