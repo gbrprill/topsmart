@@ -28,7 +28,9 @@ Top Smart sells phone parts and accessories (screens, batteries, films, cases, c
 
 - Plain HTML/CSS/JS, no build step, deployed on Vercel with serverless functions in `api/` and Upstash Redis for shared data.
 - Payment methods at the counter: Dinheiro, Pix, Cartão de crédito, Cartão de débito, Pós-pago (fiado, money to receive), split across methods, and Devolução de mercadoria (refund that returns stock).
-- Counter sales and registers are stored on the server, admin-only. Products, customer accounts and stock still live in the admin's browser (known limitation until the catalog moves to the database).
+- Counter sales, registers, products, stock (with a movement log), supplier purchases and expenses are stored on the server (`api/catalogo.js`, `api/pdv.js`, `api/financeiro.js`). The public catalog never exposes cost. Customer accounts of the site still live in the browser.
+- A catalog created before the move is sent once from the admin's browser (Produtos shows the button while the server is empty).
+- Counter search suggests products only from 4 typed letters.
 - Admin access is a server-checked login with a 12-hour signed session.
 
 ## Brand Commitments

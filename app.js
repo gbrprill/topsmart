@@ -102,8 +102,17 @@
     // custo de exemplo (55% do preço) só para os produtos de demonstração; o admin edita no cadastro
     p.cost ??= Math.round(p.price * 0.55 * 10) / 10;
   });
-  const saveProducts = () => store.set("ts_products", products);
+  // ---------- catálogo no servidor ----------
+  // No site publicado os produtos e o estoque vêm de /api/catalogo, iguais em qualquer aparelho.
+  // Enquanto o servidor estiver vazio vale o catálogo deste navegador (o admin envia uma vez em Produtos).
+  // Abrindo o arquivo direto (file://), fica o catálogo de exemplo do data.js.
+  let catalogoServidor = false;   // produtos vieram do servidor
+  let catalogoVazio = false;      // servidor respondeu sem produtos
+  let catalogoEm = 0, catalogoAdmin = false;
+  const saveProducts = () => store.set(catalogoServidor ? "ts_catalogo_cache" : "ts_products", products);
   saveProducts();
+  const cacheCat = location.protocol.startsWith("http") ? store.get("ts_catalogo_cache", null) : null;
+  if (cacheCat?.length) { products = cacheCat; catalogoServidor = true; }
   // categorias que têm produto: menu, rodapé e filtros escondem as vazias
   const catsComProduto = () => categories.filter((c) => products.some((p) => p.cat === c.slug));
   const catBy = (slug) => categories.find((c) => c.slug === slug) || categories[categories.length - 1];
@@ -375,6 +384,63 @@
     if (!r.ok) throw Object.assign(new Error(data.error || "Falha na comunicação com a loja"), { status: r.status });
     return data;
   }
+
+  // ---------- catálogo do servidor ----------
+  const isAdminSession = () => session()?.role === "ADMIN" && !!adminAuth();
+  // baixa o catálogo; devolve true se mudou algo na tela
+  async function carregarCatalogo(force) {
+    if (!REMOTE) return false;
+    const admin = isAdminSession();
+    if (!force && admin === catalogoAdmin && Date.now() - catalogoEm < 20000) return false;
+    try {
+      const { produtos } = await fetchJSON(`/api/catalogo${admin ? "?admin=1" : ""}`, "GET", null, admin);
+      catalogoEm = Date.now(); catalogoAdmin = admin;
+      if (produtos.length) {
+        const mudou = !catalogoServidor || JSON.stringify(produtos) !== JSON.stringify(products);
+        products = produtos; catalogoServidor = true; catalogoVazio = false;
+        if (mudou) store.set("ts_catalogo_cache", products);
+        return mudou;
+      }
+      const era = catalogoServidor;
+      catalogoVazio = true; catalogoServidor = false; store.set("ts_catalogo_cache", null);
+      if (era) products = store.get("ts_products", []);
+      return era || admin;
+    } catch { return false; }
+  }
+  // redesenha só se ninguém estiver no meio de um formulário ou de uma venda
+  function redesenharCatalogo() {
+    const aba = new URLSearchParams(location.hash.split("?")[1] || "").get("aba");
+    const ocupado = editingId || pendingImage || ["balcao", "entrada", "cupons"].includes(aba) || document.querySelector("dialog[open]") || document.activeElement?.matches("input, textarea, select");
+    if (!ocupado) router();
+  }
+  // estoque devolvido pelo servidor depois de venda, entrada ou ajuste: { id: saldo }
+  function aplicarEstoque(saldos = {}, custos = {}) {
+    let n = 0;
+    products.forEach((p) => {
+      if (p.id in saldos) { p.stock = saldos[p.id]; n++; }
+      if (p.id in custos) { p.cost = custos[p.id]; n++; }
+    });
+    if (n) saveProducts();
+  }
+  // envio único do catálogo deste navegador para o servidor (fotos vão junto, em lotes pequenos)
+  async function importarCatalogo(btn) {
+    const locais = store.get("ts_products", []);
+    if (!locais.length) return toast("Nenhum produto neste navegador para enviar");
+    if (!confirm(`Enviar ${locais.length} produtos deste navegador para o servidor? Depois disso, todos os aparelhos e o site usam o mesmo catálogo e o mesmo estoque.`)) return;
+    btn.disabled = true;
+    try {
+      for (let i = 0; i < locais.length; i += 5) {
+        btn.textContent = `Enviando ${Math.min(i + 5, locais.length)} de ${locais.length}...`;
+        await fetchJSON("/api/catalogo?acao=importar", "POST", { produtos: locais.slice(i, i + 5), por: session()?.name }, true);
+      }
+      await carregarCatalogo(true);
+      toast("Catálogo enviado. Agora o estoque é o mesmo em todos os aparelhos.");
+      router();
+    } catch (err) { btn.disabled = false; btn.textContent = "Tentar enviar de novo"; toast(err.message); }
+  }
+  const avisoCatalogo = () => catalogoVazio && isAdminSession()
+    ? `<div class="alert alert--warn">${icon("i-download")}<div><strong>O catálogo ainda está só neste navegador.</strong> Envie para o servidor uma vez: o estoque passa a ser o mesmo no site, no balcão e em qualquer aparelho, e as vendas e entradas de fornecedor passam a dar baixa sozinhas.</div><button class="btn btn--dark btn--sm" data-cat-importar>Enviar catálogo</button></div>`
+    : "";
 
   // produtos que este aparelho já pediu aviso (só para mostrar "Aviso ativado")
   const myAlerts = () => store.get("ts_my_alerts", []);
@@ -1222,7 +1288,8 @@
             <label class="field"><span>Preço consumidor</span><span class="money-input"><span>R$</span><input name="price" inputmode="decimal" required placeholder="0,00" value="${p ? p.price.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
             <label class="field"><span>Preço lojista</span><span class="money-input"><span>R$</span><input name="priceLoj" inputmode="decimal" required placeholder="0,00" value="${p ? p.priceLoj.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
             <label class="field"><span>Preço de custo <span class="opt">(só o admin vê)</span></span><span class="money-input"><span>R$</span><input name="cost" inputmode="decimal" placeholder="0,00" value="${p?.cost != null ? p.cost.toFixed(2).replace(".", ",") : ""}"></span><span class="err"></span></label>
-            <label class="field"><span>Quantidade em estoque</span><input name="stock" type="number" min="0" step="1" inputmode="numeric" required value="${p ? p.stock : ""}"><span class="err"></span></label>
+            <label class="field"><span>Quantidade em estoque${p && catalogoServidor ? ' <span class="opt">(mudar aqui vira ajuste)</span>' : ""}</span><input name="stock" type="number" min="0" step="1" inputmode="numeric" required value="${p ? Math.max(0, p.stock) : ""}"><span class="err"></span></label>
+            <label class="field"><span>Estoque mínimo <span class="opt">(avisa quando chegar nele)</span></span><input name="min" type="number" min="0" step="1" inputmode="numeric" value="${p?.min || ""}" placeholder="0"><span class="err"></span></label>
             <label class="field"><span>Categoria</span><select name="cat">${categories.map((c) => `<option value="${c.slug}" ${(p?.cat || "telas") === c.slug ? "selected" : ""}>${c.name}</option>`).join("")}</select></label>
             <label class="field"><span>Marca do aparelho</span><select name="brand"><option value="">Nenhuma / universal</option>${Object.keys(brands).map((b) => `<option ${p?.brand === b ? "selected" : ""}>${b}</option>`).join("")}</select></label>
             <label class="field full"><span>Modelos compatíveis <span class="opt">(opcional, separados por vírgula)</span></span><input name="models" value="${esc(p?.models.join(", ") || "")}" placeholder="Ex.: iPhone 12, iPhone 12 Pro"></label>
@@ -1237,7 +1304,7 @@
 
   function adminProducts() {
     const list = [...products].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    return `${productForm()}
+    return `${avisoCatalogo()}${productForm()}
       <div class="box"><div class="box__head"><h2>Produtos (${products.length})</h2></div>
         <input type="search" class="admin-search" id="admin-search" placeholder="Buscar por nome ou código" aria-label="Buscar produto por nome ou código">
         <div class="table-wrap"><table><thead><tr><th></th><th>Produto</th><th>Código</th><th>Consumidor</th><th>Lojista</th><th>Estoque</th><th></th></tr></thead><tbody id="admin-products">
@@ -1531,8 +1598,9 @@
     const body = { produtos: adminProducts, pedidos: adminOrders, "avise-me": adminAlertsTab, cadastros: adminUsers, config, ...ext }[tab] || adminProducts;
     const groups = [
       ["Vendas", [["inicio", "Início", "i-home"], ["balcao", "Venda balcão", "i-store"], ["pedidos", "Pedidos do site", "i-bag"], ["avise-me", "Avise-me", "i-bell"], ["cupons", "Cupons", "i-tag"]]],
-      ["Financeiro", [["caixa", "Caixa", "i-cash"], ["entrada", "Entrada de estoque", "i-download"], ["relatorios", "Relatórios", "i-chart"]]],
-      ["Cadastros", [["produtos", "Produtos", "i-tag"], ["clientes", "Clientes", "i-user"], ["fornecedores", "Fornecedores", "i-truck"], ["equipe", "Lojas e vendedores", "i-users"]]],
+      ["Financeiro", [["dashboard", "Dashboard", "i-chart"], ["caixa", "Caixa", "i-cash"], ["despesas", "Despesas", "i-wallet"], ["relatorios", "Relatórios", "i-receipt"]]],
+      ["Estoque", [["estoque", "Estoque", "i-box"], ["entrada", "Entrada de estoque", "i-download"], ["produtos", "Produtos", "i-tag"]]],
+      ["Cadastros", [["clientes", "Clientes", "i-user"], ["fornecedores", "Fornecedores", "i-truck"], ["equipe", "Lojas e vendedores", "i-users"]]],
       ["Sistema", [["config", "Configurações", "i-gear"]]],
     ];
     const badge = (k) => k === "avise-me" ? `<span class="side__n" id="tab-alerts-n">${pendingAlerts().length || ""}</span>`
@@ -1541,7 +1609,7 @@
       <nav class="side" aria-label="Painel">
         <div class="side__who"><strong>${esc(s.name)}</strong><button class="text-btn" data-logout>Sair</button></div>
         ${groups.map(([g, items]) => `<div class="side__group"><span class="side__label">${g}</span>
-          ${items.filter(([k]) => k in ext || !["inicio", "balcao", "caixa", "relatorios", "equipe", "clientes", "fornecedores", "entrada", "cupons"].includes(k)).map(([k, v, ic]) =>
+          ${items.filter(([k]) => k in ext || !["inicio", "balcao", "caixa", "relatorios", "equipe", "clientes", "fornecedores", "entrada", "cupons", "dashboard", "despesas", "estoque"].includes(k)).map(([k, v, ic]) =>
             `<a class="side__link ${tab === k ? "is-active" : ""}" href="#/admin?aba=${k}" ${tab === k ? 'aria-current="page"' : ""}>${icon(ic)}<span>${v}</span>${badge(k)}</a>`).join("")}
         </div>`).join("")}
       </nav>
@@ -1699,6 +1767,7 @@
       if ("editTab" in d) { location.hash = "#/admin?aba=produtos"; setTimeout(goForm, 60); }
       else { router(); goForm(); }
     }
+    else if ("catImportar" in d) importarCatalogo(t);
     else if (d.alert) openAlert(d.alert);
     else if (d.alertStatus) {
       alertsApi.setStatus(d.alertStatus, d.to).then(() => {
@@ -1720,6 +1789,16 @@
     else if (d.del) {
       const p = prodBy(d.del);
       if (p && confirm(`Excluir "${fullName(p)}"? Essa ação não pode ser desfeita.`)) {
+        if (catalogoServidor) {
+          fetchJSON(`/api/catalogo?id=${encodeURIComponent(p.id)}`, "DELETE", null, true).then(() => {
+            products = products.filter((x) => x.id !== d.del);
+            cart = cart.filter((l) => l.id !== d.del);
+            saveProducts(); saveCart();
+            if (editingId === d.del) editingId = null;
+            toast("Produto excluído"); router();
+          }).catch((err) => toast(err.message));
+          return;
+        }
         products = products.filter((x) => x.id !== d.del);
         cart = cart.filter((l) => l.id !== d.del);
         saveProducts(); saveCart();
@@ -1901,9 +1980,21 @@
         cat: form.cat.value, brand: form.brand.value,
         models: form.models.value.split(",").map((m) => m.trim()).filter(Boolean),
         image: pendingImage || existing?.image,
+        min: Math.max(0, parseInt(form.min.value, 10) || 0),
       };
       const restocked = existing && existing.stock <= 0 && fields.stock > 0;
-      if (existing) {
+      if (catalogoServidor) {
+        // catálogo no servidor: a foto só vai se for nova; o estoque digitado vira ajuste no histórico
+        const id = existing?.id || (() => { const base = slugify(`${name} ${fields.code}`) || "produto"; let s = base, n = 2; while (products.some((p) => p.id === s)) s = `${base}-${n++}`; return s; })();
+        const body = { ...fields, image: pendingImage || undefined, slug: existing?.slug || id, por: session()?.name };
+        if (!existing) Object.assign(body, { featured: false, isNew: true, createdAt: Date.now() });
+        const btn = form.querySelector("button.btn--primary"); btn.disabled = true;
+        try {
+          const { produto } = await fetchJSON(`/api/catalogo?id=${encodeURIComponent(id)}`, "PUT", body, true);
+          if (existing) Object.assign(existing, produto); else products.unshift(produto);
+          saveProducts();
+        } catch (err) { btn.disabled = false; toast(err.message); return; }
+      } else if (existing) {
         Object.assign(existing, fields, { promo: existing.promo && existing.promo < fields.price ? existing.promo : null });
       } else {
         const base = slugify(`${name} ${fields.code}`) || "produto";
@@ -1937,11 +2028,16 @@
   window.TS = {
     $, money, esc, icon, digits, masks, store, toast, session, adminAuth, fmtDate, fullName, catBy, media, prodBy, users,
     fetchJSON, router, saveProducts, adminUsersHTML: () => adminUsers(), PAYMENT_LABEL, whatsapp, validate, setErr, req, phoneRule,
+    carregarCatalogo, aplicarEstoque, avisoCatalogo, categories,
     get products() { return products; },
+    get catalogoServidor() { return catalogoServidor; },
     get newOrders() { return adminOrdersList ? adminOrdersList.filter((o) => o.status === "NEW").length : null; },
     get pendingAlerts() { return adminAlerts ? pendingAlerts().length : null; },
   };
 
   renderNav();
   router();
+  // catálogo do servidor: na abertura e a cada troca de tela (no máximo a cada 20 s)
+  carregarCatalogo(true).then((mudou) => { if (mudou) { renderNav(); redesenharCatalogo(); } });
+  window.addEventListener("hashchange", () => carregarCatalogo().then((mudou) => mudou && redesenharCatalogo()));
 })();

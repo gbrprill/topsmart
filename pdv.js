@@ -74,18 +74,20 @@
   const abertoOutroDia = (c) => c && new Date(c.abertoEm).toDateString() !== new Date().toDateString();
 
   function fechamentoTexto(c, r) {
-    const f = r.porForma;
+    const f = r.porForma, e = r.entradas || f;
     const linhas = [
       `*FECHAMENTO ${c.lojaNome.toUpperCase()} ${dia(c.fechadoEm || new Date().toISOString())}*`,
+      `Aberto ${dia(c.abertoEm)} ${hora(c.abertoEm)}${c.abertoPor ? ` por ${c.abertoPor}` : ""}${c.fechadoEm ? ` · fechado ${dia(c.fechadoEm)} ${hora(c.fechadoEm)}${c.fechadoPor ? ` por ${c.fechadoPor}` : ""}` : ""}`,
       "",
       `Fundo de caixa: ${money(c.fundo)}`,
       `Vendas: ${money(r.liquido)} (${r.qtdVendas} ${r.qtdVendas === 1 ? "venda" : "vendas"})`,
-      `Pix: ${money(f.pix)}`,
-      `Dinheiro: ${money(f.dinheiro)}`,
+      `Pix: ${money(e.pix)}`,
+      `Dinheiro: ${money(e.dinheiro)}`,
     ];
-    if (f.credito) linhas.push(`Crédito: ${money(f.credito)}`);
-    if (f.debito) linhas.push(`Débito: ${money(f.debito)}`);
-    if (f.fiado) linhas.push(`Fiado (a receber): ${money(f.fiado)}`);
+    if (e.credito) linhas.push(`Crédito: ${money(e.credito)}`);
+    if (e.debito) linhas.push(`Débito: ${money(e.debito)}`);
+    if (r.recebido) linhas.push(`Fiado recebido: ${money(r.recebido)} (já somado acima)`);
+    if (f.fiado) linhas.push(`Vendido no fiado (a receber): ${money(f.fiado)}`);
     if (f.credito_loja < 0) linhas.push(`Crédito gerado para clientes: ${money(-f.credito_loja)}`);
     if (f.credito_loja > 0) linhas.push(`Pago com crédito da loja: ${money(f.credito_loja)}`);
     if (r.devolvido) linhas.push(`Devoluções: -${money(r.devolvido)}`);
@@ -125,8 +127,10 @@
         deHoje.forEach((v) => v.pagamentos.forEach((p) => (porForma[p.forma] = (porForma[p.forma] || 0) + (v.tipo === "devolucao" ? -p.valor : p.valor))));
         const prods = T().products;
         const semEstoque = prods.filter((p) => p.stock <= 0).length;
+        const abaixoMin = prods.filter((p) => p.min && p.stock > 0 && p.stock <= p.min).length;
 
         paint("inicio-body", `
+          ${T().avisoCatalogo()}
           ${c && abertoOutroDia(c) ? `<div class="alert alert--warn">${icon("i-clock")}<div><strong>O caixa está aberto desde ${dia(c.abertoEm)}, ${hora(c.abertoEm)}.</strong> Feche-o e abra o de hoje para as vendas caírem no dia certo.</div><a class="btn btn--dark btn--sm" href="#/admin?aba=caixa">Ir para o caixa</a></div>` : ""}
           <div class="dash">
             <section class="dash__caixa ${c ? "is-open" : ""}">
@@ -151,8 +155,9 @@
             <nav class="dash__links" aria-label="Atalhos">
               <a href="#/admin?aba=pedidos"><span>Pedidos do site novos</span><b class="num">${T().newOrders ?? "…"}</b></a>
               <a href="#/admin?aba=avise-me"><span>Avise-me aguardando</span><b class="num">${T().pendingAlerts ?? "…"}</b></a>
-              <a href="#/admin?aba=produtos"><span>Produtos sem estoque</span><b class="num">${semEstoque}</b></a>
-              <a href="#/admin?aba=relatorios"><span>Relatório do mês</span>${icon("i-arrow")}</a>
+              <a href="#/admin?aba=estoque&f=sem"><span>Produtos sem estoque</span><b class="num">${semEstoque}</b></a>
+              ${abaixoMin ? `<a href="#/admin?aba=estoque&f=min"><span>Abaixo do mínimo</span><b class="num">${abaixoMin}</b></a>` : ""}
+              <a href="#/admin?aba=dashboard"><span>Dashboard financeiro</span>${icon("i-arrow")}</a>
             </nav>
           </div>`);
       })}`;
@@ -390,9 +395,13 @@
   // ---- busca de produtos (uma caixa por lista: "itens" e, na troca, "devolvidos") ----
   let results = [], resultIdx = 0, searchAlvo = "itens";
   const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  // sugestões só a partir de 4 letras ("TEL" não sugere, "TELA" já sugere)
+  const MIN_BUSCA = 4;
+  const curta = (q) => norm(q).replace(/\s+/g, "").length < MIN_BUSCA;
+  const dicaBusca = (q) => `<li class="res__none">Digite pelo menos ${MIN_BUSCA} letras${q.trim() ? ` (faltam ${MIN_BUSCA - norm(q).replace(/\s+/g, "").length})` : ""}.</li>`;
   function buscar(q) {
     const n = norm(q).trim();
-    if (!n) return [];
+    if (!n || curta(q)) return [];
     const terms = n.split(/\s+/);
     return T().products
       .map((p) => {
@@ -415,7 +424,7 @@
         <span class="row__thumb">${T().media(p)}</span>
         <span class="res__name"><b>${esc(p.name)}</b><small class="muted">${esc(p.code)} · ${voltando ? "volta para o estoque se estiver bom" : p.stock > 0 ? `${p.stock} em estoque` : '<span class="warn-text">sem estoque</span>'}</small></span>
         <span class="num res__price">${money(precoPara(p))}</span>
-      </li>`).join("") : `<li class="res__none">Nada encontrado para “${esc(q.value)}”.</li>`;
+      </li>`).join("") : curta(q.value) ? dicaBusca(q.value) : `<li class="res__none">Nada encontrado para “${esc(q.value)}”.</li>`;
     q.setAttribute("aria-activedescendant", results.length ? `pdv-r-${resultIdx}` : "");
   }
   function addProduto(id, alvo = searchAlvo) {
@@ -504,18 +513,22 @@
     btn.disabled = true;
     const limpa = (l) => l.map(({ productId, name, code, variant, qty, unit, desconto, custo, estado }) => ({ productId, name, code, variant, qty, unit, desconto, custo, estado }));
     try {
-      const { venda } = await api("r=venda", "POST", {
-        lojaId: lojaId(), tipo: sale.tipo, vendedorId: sale.vendedorId, cliente: sale.cliente, obs: sale.obs,
+      const { venda, estoque } = await api("r=venda", "POST", {
+        lojaId: lojaId(), tipo: sale.tipo, vendedorId: sale.vendedorId, cliente: sale.cliente, obs: sale.obs, por: T().session()?.name,
         itens: limpa(sale.itens), devolvidos: limpa(sale.devolvidos),
         pagamentos: aPagar() ? sale.pagamentos : [],
         cupom: descCupom() ? sale.cupom.code : undefined,
       });
-      // estoque local: o que sai baixa; o que volta bom entra; com defeito não volta ao estoque
-      const mexe = (it, delta) => { const p = T().prodBy(it.productId); if (p) p.stock = Math.max(0, p.stock + delta); };
-      if (sale.tipo === "devolucao") sale.itens.forEach((it) => it.estado !== "defeito" && mexe(it, it.qty));
-      else sale.itens.forEach((it) => mexe(it, -it.qty));
-      sale.devolvidos.forEach((it) => it.estado !== "defeito" && mexe(it, it.qty));
-      T().saveProducts();
+      // o servidor já deu baixa (ou devolveu) e manda o saldo novo de cada produto
+      if (T().catalogoServidor) T().aplicarEstoque(estoque);
+      else {
+        // catálogo ainda só neste navegador: estoque local, como antes
+        const mexe = (it, delta) => { const p = T().prodBy(it.productId); if (p) p.stock = Math.max(0, p.stock + delta); };
+        if (sale.tipo === "devolucao") sale.itens.forEach((it) => it.estado !== "defeito" && mexe(it, it.qty));
+        else sale.itens.forEach((it) => mexe(it, -it.qty));
+        sale.devolvidos.forEach((it) => it.estado !== "defeito" && mexe(it, it.qty));
+        T().saveProducts();
+      }
       store.set("ts_pdv_vendedor", sale.vendedorId);
       sale = novaVenda(); saveSale();
       renderPdv();
@@ -691,6 +704,72 @@
 
   const stat = (label, valor, extra = "", cls = "") => `<div class="stat ${cls}"><span>${label}</span><strong class="num">${valor}</strong>${extra ? `<small>${extra}</small>` : ""}</div>`;
 
+  // produtos que saíram e voltaram num conjunto de vendas (relatório do fim do dia)
+  function movProdutos(vendas) {
+    const saiu = {}, voltou = {};
+    const add = (map, it, estado = "") => {
+      const x = (map[`${it.productId || it.name}|${it.variant || ""}|${estado}`] ||= { name: it.name, code: it.code, variant: it.variant, estado, qty: 0, valor: 0 });
+      x.qty += it.qty; x.valor += it.sub ?? it.unit * it.qty;
+    };
+    vendas.filter((v) => v.status !== "CANCELADA").forEach((v) => {
+      if (v.tipo === "devolucao") v.itens.forEach((it) => add(voltou, it, it.estado || "bom"));
+      else v.itens.forEach((it) => add(saiu, it));
+      (v.devolvidos || []).forEach((it) => add(voltou, it, it.estado || "bom"));
+    });
+    const ord = (m) => Object.values(m).sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name));
+    return { saiu: ord(saiu), voltou: ord(voltou) };
+  }
+  const somaQtd = (l) => l.reduce((s, x) => s + x.qty, 0);
+  function produtosDiaHTML(vendas) {
+    const { saiu, voltou } = movProdutos(vendas);
+    const linha = (x) => `<li><span class="num">${x.qty}x</span><span>${esc(x.name)}${x.code ? ` <small class="muted">${esc(x.code)}</small>` : ""}${x.variant ? ` (${esc(x.variant)})` : ""}${x.estado ? ` <span class="tag ${x.estado === "defeito" ? "tag--bad" : "tag--ok"}">${x.estado === "defeito" ? "com defeito" : "voltou ao estoque"}</span>` : ""}</span><b class="num">${money(x.valor)}</b></li>`;
+    return `<div class="pdia">
+      <div><h3>Saiu <span class="muted">(${somaQtd(saiu)} ${somaQtd(saiu) === 1 ? "item" : "itens"})</span></h3>${saiu.length ? `<ul class="mlist">${saiu.map(linha).join("")}</ul>` : '<p class="muted">Nada saiu ainda.</p>'}</div>
+      <div><h3>Voltou <span class="muted">(${somaQtd(voltou)} ${somaQtd(voltou) === 1 ? "item" : "itens"})</span></h3>${voltou.length ? `<ul class="mlist">${voltou.map(linha).join("")}</ul>` : '<p class="muted">Nenhuma devolução ou troca.</p>'}</div>
+    </div>`;
+  }
+  const ACAO = { abriu: "Abriu o caixa", retirada: "Retirada", reforco: "Reforço", recebimento: "Fiado recebido", fechou: "Fechou o caixa", estorno: "Despesa estornada" };
+  const logHTML = (c) => (c.log || []).length
+    ? `<ul class="mlist mlist--log">${c.log.map((l) => `<li><span class="num">${dia(l.em)} ${hora(l.em)}</span><span>${ACAO[l.acao] || esc(l.acao)}${l.forma ? ` (${FORMAS[l.forma]})` : ""}${l.por ? ` · <b>${esc(l.por)}</b>` : ""}</span><b class="num">${l.valor != null ? money(l.valor) : ""}</b></li>`).join("")}</ul>`
+    : `<p class="muted">Aberto em ${dia(c.abertoEm)} às ${hora(c.abertoEm)}${c.fechadoEm ? `, fechado em ${dia(c.fechadoEm)} às ${hora(c.fechadoEm)}` : ""}.</p>`;
+  const quem = (c) => `${dia(c.abertoEm)} às ${hora(c.abertoEm)}${c.abertoPor ? ` por ${esc(c.abertoPor)}` : ""}`;
+  const movTxt = (m) => m.tipo === "recebimento" ? `Fiado recebido (${FORMAS[m.forma]})${m.motivo ? `: ${esc(m.motivo.replace(/^Fiado de /, ""))}` : ""}` : `${m.tipo === "sangria" ? "Retirada" : "Reforço"}${m.motivo ? `: ${esc(m.motivo)}` : ""}`;
+
+  // folha A4 do fechamento: formas de pagamento, movimentos e produtos do dia
+  function imprimirFechamento(c, r, vendas) {
+    const e = r.entradas || r.porForma;
+    const { saiu, voltou } = movProdutos(vendas);
+    const tab = (l, estado) => l.length ? `<table class="rep__table"><thead><tr><th>Qtd</th><th>Produto</th>${estado ? "<th>Estado</th>" : ""}<th class="r">Valor</th></tr></thead><tbody>${l.map((x) => `<tr><td class="num">${x.qty}</td><td>${esc(x.name)}${x.code ? ` - ${esc(x.code)}` : ""}${x.variant ? ` (${esc(x.variant)})` : ""}</td>${estado ? `<td>${x.estado === "defeito" ? "Com defeito" : "Bom (voltou ao estoque)"}</td>` : ""}<td class="r num">${money(x.valor)}</td></tr>`).join("")}</tbody></table>` : "<p>Nenhum.</p>";
+    const sheet = document.createElement("div");
+    sheet.id = "print-sheet";
+    sheet.innerHTML = `
+      <header class="sheet__head"><strong>TOP SMART · ${esc(c.lojaNome)}</strong><span>Fechamento de caixa · ${dia(c.abertoEm)}</span></header>
+      <p>Aberto em ${quem(c)}${c.fechadoEm ? ` · Fechado em ${dia(c.fechadoEm)} às ${hora(c.fechadoEm)}${c.fechadoPor ? ` por ${esc(c.fechadoPor)}` : ""}` : " · ainda aberto"}</p>
+      <table class="rep__table"><tbody>
+        <tr><td>Fundo de caixa</td><td class="r num">${money(c.fundo)}</td></tr>
+        <tr><td><b>Vendas (${r.qtdVendas})</b></td><td class="r num"><b>${money(r.liquido)}</b></td></tr>
+        <tr><td>Pix</td><td class="r num">${money(e.pix)}</td></tr>
+        <tr><td>Dinheiro</td><td class="r num">${money(e.dinheiro)}</td></tr>
+        <tr><td>Cartão de crédito</td><td class="r num">${money(e.credito)}</td></tr>
+        <tr><td>Cartão de débito</td><td class="r num">${money(e.debito)}</td></tr>
+        ${r.recebido ? `<tr><td>Fiado recebido (já somado nas formas)</td><td class="r num">${money(r.recebido)}</td></tr>` : ""}
+        ${r.porForma.fiado ? `<tr><td>Vendido no fiado (a receber)</td><td class="r num">${money(r.porForma.fiado)}</td></tr>` : ""}
+        ${r.devolvido ? `<tr><td>Devoluções</td><td class="r num">-${money(r.devolvido)}</td></tr>` : ""}
+        ${r.sangrias ? `<tr><td>Retiradas</td><td class="r num">-${money(r.sangrias)}</td></tr>` : ""}
+        ${r.suprimentos ? `<tr><td>Reforços</td><td class="r num">${money(r.suprimentos)}</td></tr>` : ""}
+        <tr><td><b>Dinheiro na gaveta (esperado)</b></td><td class="r num"><b>${money(r.dinheiroEsperado)}</b></td></tr>
+        ${c.contado != null ? `<tr><td>Contado</td><td class="r num">${money(c.contado)}${r.diferenca ? ` (${r.diferenca > 0 ? "sobra" : "falta"} ${money(Math.abs(r.diferenca))})` : ""}</td></tr>` : ""}
+      </tbody></table>
+      <h3>Produtos que saíram (${somaQtd(saiu)})</h3>${tab(saiu)}
+      <h3>Produtos que voltaram (${somaQtd(voltou)})</h3>${tab(voltou, true)}
+      ${c.obs ? `<p>Obs.: ${esc(c.obs)}</p>` : ""}`;
+    document.body.append(sheet);
+    document.body.classList.add("printing-sheet");
+    window.print();
+    document.body.classList.remove("printing-sheet");
+    sheet.remove();
+  }
+
   async function renderCaixa() {
     const root = $("#caixa-root");
     if (!root) return;
@@ -701,17 +780,19 @@
       atual = abrirCaixaHTML("Conte o dinheiro que fica na gaveta para troco e abra o caixa do dia.");
     } else {
       const { caixa, vendas, resumo: r } = await api(`r=caixa&id=${encodeURIComponent(c.id)}`);
-      const f = r.porForma;
+      const f = r.porForma, e = r.entradas || f;
       atual = `
         ${abertoOutroDia(caixa) ? `<div class="alert alert--warn">${icon("i-clock")}<div><strong>Aberto há ${caixaDias(caixa) || 1} ${caixaDias(caixa) > 1 ? "dias" : "dia"}, desde ${dia(caixa.abertoEm)} às ${hora(caixa.abertoEm)}.</strong> Feche este caixa e abra um novo para o dia de hoje.</div></div>` : ""}
         <section class="box caixa">
-          <div class="box__head"><h2>Caixa aberto</h2><span class="muted">desde ${dia(caixa.abertoEm)} às ${hora(caixa.abertoEm)}</span></div>
+          <div class="box__head"><h2>Caixa aberto</h2><span class="muted">desde ${quem(caixa)}</span>
+            <button class="btn btn--ghost btn--sm" data-caixa-print="${esc(caixa.id)}">${icon("i-print")}Imprimir</button></div>
           <div class="stats">
             ${stat("Vendas", money(r.liquido), `${r.qtdVendas} ${r.qtdVendas === 1 ? "venda" : "vendas"}${r.qtdDevolucoes ? ` · ${r.qtdDevolucoes} devol.` : ""}`, "stat--main")}
             ${stat("Dinheiro na gaveta", money(r.dinheiroEsperado), `fundo ${money(caixa.fundo)} + dinheiro${r.sangrias ? " - retiradas" : ""}`)}
-            ${stat("Pix", money(f.pix))}
-            ${stat("Cartão", money(f.credito + f.debito), `crédito ${money(f.credito)} · débito ${money(f.debito)}`)}
-            ${f.fiado ? stat("Fiado a receber", money(f.fiado)) : ""}
+            ${stat("Pix", money(e.pix), r.recebimentos?.pix ? `inclui ${money(r.recebimentos.pix)} de fiado` : "")}
+            ${stat("Cartão", money(e.credito + e.debito), `crédito ${money(e.credito)} · débito ${money(e.debito)}`)}
+            ${f.fiado ? stat("Vendido no fiado", money(f.fiado), "a receber") : ""}
+            ${r.recebido ? stat("Fiado recebido", money(r.recebido), "já somado nas formas") : ""}
             ${f.credito_loja ? stat(f.credito_loja < 0 ? "Crédito gerado" : "Pago com crédito", money(Math.abs(f.credito_loja)), f.credito_loja < 0 ? "trocas e devoluções" : "não entra na gaveta") : ""}
           </div>
           <div class="caixa__cols">
@@ -729,8 +810,8 @@
                 </li>`).join("")}</ul>` : `<p class="muted">Nenhuma venda ainda. <a class="link-arrow" href="#/admin?aba=balcao">Fazer uma venda ${icon("i-arrow")}</a></p>`}
             </div>
             <div>
-              <h3>Retiradas e reforços</h3>
-              ${caixa.movimentos.length ? `<ul class="mlist">${caixa.movimentos.map((m) => `<li><span class="num">${hora(m.em)}</span><span>${m.tipo === "sangria" ? "Retirada" : "Reforço"}${m.motivo ? `: ${esc(m.motivo)}` : ""}</span><b class="num ${m.tipo === "sangria" ? "neg" : ""}">${m.tipo === "sangria" ? "-" : "+"}${money(m.valor)}</b></li>`).join("")}</ul>` : `<p class="muted">Pagou algo com o dinheiro da gaveta? Registre aqui.</p>`}
+              <h3>Retiradas, reforços e fiado recebido</h3>
+              ${caixa.movimentos.length ? `<ul class="mlist">${caixa.movimentos.map((m) => `<li><span class="num">${hora(m.em)}</span><span>${movTxt(m)}</span><b class="num ${m.tipo === "sangria" ? "neg" : ""}">${m.tipo === "sangria" ? "-" : "+"}${money(m.valor)}</b></li>`).join("")}</ul>` : `<p class="muted">Pagou algo com o dinheiro da gaveta? Registre aqui.</p>`}
               <form class="mov" id="mov-form" novalidate>
                 <div class="seg seg--sm" role="radiogroup" aria-label="Tipo">
                   <label><input type="radio" name="tipo" value="sangria" checked><span>Retirada</span></label>
@@ -740,9 +821,15 @@
                 <input name="motivo" maxlength="120" placeholder="Motivo (ex.: almoço, fornecedor)" aria-label="Motivo">
                 <button class="btn btn--ghost btn--sm">Registrar</button>
               </form>
+              <p class="muted mov__hint">Conta de luz, aluguel ou fornecedor? Lance em <a href="#/admin?aba=despesas">Despesas</a> e marque "pago com o dinheiro do caixa".</p>
             </div>
           </div>
         </section>
+        <section class="box">
+          <div class="box__head"><h2>Produtos do dia</h2><span class="muted">o que saiu e o que voltou neste caixa</span></div>
+          ${produtosDiaHTML(vendas)}
+        </section>
+        <details class="box caixa-log"><summary><h2>Registro do caixa</h2><span class="muted">abertura, retiradas, fiado e fechamento, com horário e quem fez</span>${icon("i-down")}</summary>${logHTML(caixa)}</details>
         <form class="box fechar" id="fechar-form" data-caixa="${esc(caixa.id)}" data-esperado="${r.dinheiroEsperado}" novalidate>
           <div class="box__head"><h2>Fechar caixa</h2></div>
           <div class="fechar__grid">
@@ -753,15 +840,17 @@
           <button class="btn btn--dark">${icon("i-lock")}Fechar caixa</button>
         </form>`;
     }
-    root.innerHTML = `${atual}<section class="box"><div class="box__head"><h2>Caixas anteriores</h2></div><div id="caixa-hist">${skel(3)}</div></section>`;
+    root.innerHTML = `${atual}<section class="box"><div class="box__head"><h2>Caixas anteriores</h2><span class="muted">um por dia</span></div><div id="caixa-hist">${skel(3)}</div></section>`;
     try {
       const { caixas } = await historicoP;
       const fechados = caixas.filter((x) => x.caixa.status === "FECHADO");
-      paint("caixa-hist", fechados.length ? `<div class="olist">${fechados.map(({ caixa: k, resumo: r }) => `
+      paint("caixa-hist", fechados.length ? `<div class="olist">${fechados.map(({ caixa: k, resumo: r }) => {
+        const e = r.entradas || r.porForma;
+        return `
         <details class="hist">
           <summary>
             <span class="num">${dia(k.abertoEm)}</span>
-            <span class="hist__when">${hora(k.abertoEm)} até ${k.fechadoEm ? `${dia(k.fechadoEm) !== dia(k.abertoEm) ? `${dia(k.fechadoEm)} ` : ""}${hora(k.fechadoEm)}` : "-"}</span>
+            <span class="hist__when">${hora(k.abertoEm)} até ${k.fechadoEm ? `${dia(k.fechadoEm) !== dia(k.abertoEm) ? `${dia(k.fechadoEm)} ` : ""}${hora(k.fechadoEm)}` : "-"}<small class="hist__formas">Pix ${money(e.pix)} · Dinheiro ${money(e.dinheiro)} · Cartão ${money(e.credito + e.debito)}</small></span>
             <span class="num"><b>${money(r.liquido)}</b></span>
             <span class="hist__dif ${r.diferenca ? (r.diferenca > 0 ? "pos" : "neg") : ""}">${r.diferenca ? `${r.diferenca > 0 ? "Sobra" : "Falta"} ${money(Math.abs(r.diferenca))}` : "Bateu"}</span>
             ${icon("i-down")}
@@ -771,10 +860,14 @@
             <div class="hist__actions">
               <button class="btn btn--wa btn--sm" data-fech-wa="${esc(k.id)}">${icon("i-wa")}Enviar no grupo</button>
               <button class="btn btn--ghost btn--sm" data-fech-copy="${esc(k.id)}">${icon("i-copy")}Copiar</button>
+              <button class="btn btn--ghost btn--sm" data-caixa-print="${esc(k.id)}">${icon("i-print")}Imprimir fechamento</button>
+              <button class="btn btn--ghost btn--sm" data-caixa-prod="${esc(k.id)}">${icon("i-box")}Produtos do dia</button>
               <a class="btn btn--ghost btn--sm" href="#/admin?aba=relatorios&de=${k.abertoEm.slice(0, 10)}&ate=${(k.fechadoEm || k.abertoEm).slice(0, 10)}">${icon("i-chart")}Relatório do período</a>
             </div>
+            <div id="hist-prod-${esc(k.id)}"></div>
           </div>
-        </details>`).join("")}</div>` : `<p class="muted">Os caixas fechados aparecem aqui, com o texto do fechamento pronto para o WhatsApp.</p>`);
+        </details>`;
+      }).join("")}</div>` : `<p class="muted">Os caixas fechados aparecem aqui, com o texto do fechamento pronto para o WhatsApp.</p>`);
       fechamentos = Object.fromEntries(caixas.map(({ caixa: k, resumo: r }) => [k.id, fechamentoTexto(k, r)]));
     } catch (err) { paint("caixa-hist", `<p class="muted">${esc(err.message)}</p>`); }
   }
@@ -919,7 +1012,7 @@
   }
   let draft = null;
   function renderEquipe() {
-    draft ||= JSON.parse(JSON.stringify({ lojas: setup.lojas, vendedores: setup.vendedores }));
+    draft ||= JSON.parse(JSON.stringify({ lojas: setup.lojas, vendedores: setup.vendedores, taxas: setup.taxas || { credito: 0, debito: 0 } }));
     paint("equipe-root", `<form class="equipe" id="equipe-form" novalidate>
       ${draft.lojas.map((l, li) => `
         <section class="box equipe__loja">
@@ -936,6 +1029,13 @@
           </ul>
           <button type="button" class="text-btn" data-eq-add="${esc(l.id)}">${icon("i-plus")}Adicionar vendedor</button>
         </section>`).join("")}
+      <section class="box equipe__taxas">
+        <div class="box__head"><h2>Taxas da maquininha</h2><span class="muted">entram no dashboard como desconto da receita</span></div>
+        <div class="equipe__taxasgrid">
+          <label class="field"><span>Cartão de crédito (%)</span><input data-eq-taxa="credito" inputmode="decimal" value="${String(draft.taxas.credito || "").replace(".", ",")}" placeholder="0,00"></label>
+          <label class="field"><span>Cartão de débito (%)</span><input data-eq-taxa="debito" inputmode="decimal" value="${String(draft.taxas.debito || "").replace(".", ",")}" placeholder="0,00"></label>
+        </div>
+      </section>
       <div class="equipe__foot">
         <button type="button" class="btn btn--ghost" data-eq-addloja>${icon("i-store")}Nova loja</button>
         <button class="btn btn--primary">${icon("i-check")}Salvar</button>
@@ -974,20 +1074,30 @@
   function renderClientes() {
     const lista = (setup.clientes || []).filter((c) => !cliFiltro || norm(`${c.nome} ${c.doc} ${c.telefone}`).includes(norm(cliFiltro)) || (T().digits(cliFiltro).length >= 3 && T().digits(`${c.doc}${c.telefone}`).includes(T().digits(cliFiltro))));
     const totalCredito = (setup.clientes || []).reduce((s, c) => s + (c.credito || 0), 0);
+    const totalFiado = (setup.clientes || []).reduce((s, c) => s + (c.fiado || 0), 0);
     paint("cli-root", `
       ${cliFormBox()}
       <section class="box">
         <div class="box__head"><h2>Clientes do balcão <span class="muted">(${(setup.clientes || []).length})</span></h2>
-          ${totalCredito ? `<span class="cred-total">${icon("i-wallet")}Crédito em aberto: <b class="num">${money(totalCredito)}</b></span>` : ""}</div>
+          <span class="cli-totais">${totalFiado ? `<span class="cred-total cred-total--debt">${icon("i-clock")}Fiado a receber: <b class="num">${money(totalFiado)}</b></span>` : ""}
+          ${totalCredito ? `<span class="cred-total">${icon("i-wallet")}Crédito em aberto: <b class="num">${money(totalCredito)}</b></span>` : ""}</span></div>
         <input type="search" class="admin-search" id="cli-busca" value="${esc(cliFiltro)}" placeholder="Buscar por nome, CPF, CNPJ ou telefone" aria-label="Buscar cliente">
         ${lista.length ? `<div class="olist">${lista.map((c) => `
           <details class="hist cli-row">
             <summary>
               <span class="cli-row__nome"><b>${esc(c.nome)}</b>${c.tipo === "lojista" ? ' <span class="tag tag--pro">Lojista</span>' : ""}<small class="muted">${esc([c.doc, c.telefone].filter(Boolean).join(" · ")) || "sem documento"}</small></span>
-              <span class="cli-row__cred ${c.credito > 0 ? "has" : ""}"><small>Crédito</small><b class="num">${money(c.credito || 0)}</b></span>
+              <span class="cli-row__cred ${c.fiado > 0 ? "debt" : c.credito > 0 ? "has" : ""}"><small>${c.fiado > 0 ? "Deve (fiado)" : "Crédito"}</small><b class="num">${money(c.fiado > 0 ? c.fiado : c.credito || 0)}</b></span>
               ${icon("i-down")}
             </summary>
             <div class="hist__body">
+              ${c.fiado > 0 ? `
+              <form class="ajuste receber" data-cad-receber="${esc(c.id)}" novalidate>
+                <span class="receber__t">Deve <b class="num">${money(c.fiado)}</b>${c.fiadoDesde ? ` desde ${dia(c.fiadoDesde)}` : ""}</span>
+                <span class="money-input"><span>R$</span><input name="valor" inputmode="decimal" value="${fmtMoneyInput(c.fiado)}" aria-label="Valor recebido"></span>
+                <select name="forma" aria-label="Forma de pagamento">${["pix", "dinheiro", "debito", "credito"].map((f) => `<option value="${f}">${FORMAS[f]}</option>`).join("")}</select>
+                <button class="btn btn--primary btn--sm">${icon("i-check")}Receber no caixa</button>
+                ${T().digits(c.telefone).length >= 10 ? `<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="https://wa.me/55${T().digits(c.telefone).replace(/^55/, "")}?text=${encodeURIComponent(`Olá${c.nome ? `, ${c.nome.split(" ")[0]}` : ""}! Aqui é da Top Smart. Passando para lembrar do valor de ${money(c.fiado)} em aberto na loja. Pode pagar no Pix ou aqui no balcão. Obrigado!`)}">${icon("i-wa")}Cobrar</a>` : ""}
+              </form>` : ""}
               <div class="hist__actions">
                 <button class="btn btn--ghost btn--sm" data-cad-cli-edit="${esc(c.id)}">${icon("i-edit")}Editar</button>
                 ${T().digits(c.telefone).length >= 10 ? `<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="https://wa.me/55${T().digits(c.telefone).replace(/^55/, "")}?text=${encodeURIComponent(`Olá${c.nome ? `, ${c.nome.split(" ")[0]}` : ""}! Aqui é da Top Smart. Você tem ${money(c.credito || 0)} de crédito na loja.`)}">${icon("i-wa")}Avisar saldo</a>` : ""}
@@ -1000,6 +1110,7 @@
               </form>
               <h3 class="ext__t">Extrato do crédito</h3>
               ${(c.extrato || []).length ? `<ul class="mlist">${c.extrato.map((m) => `<li><span class="num">${dia(m.em)}</span><span>${esc(m.motivo)}${m.ref ? ` · ${esc(m.ref)}` : ""}</span><b class="num ${m.valor < 0 ? "neg" : "pos"}">${m.valor > 0 ? "+" : "-"}${money(Math.abs(m.valor))}</b></li>`).join("")}</ul>` : '<p class="muted">Nenhum movimento ainda.</p>'}
+              ${(c.fiadoExtrato || []).length ? `<h3 class="ext__t">Extrato do fiado</h3><ul class="mlist">${c.fiadoExtrato.map((m) => `<li><span class="num">${dia(m.em)}</span><span>${esc(m.motivo)}${m.ref ? ` · ${esc(m.ref)}` : ""}</span><b class="num ${m.valor > 0 ? "neg" : "pos"}">${m.valor > 0 ? "+" : "-"}${money(Math.abs(m.valor))}</b></li>`).join("")}</ul>` : ""}
             </div>
           </details>`).join("")}</div>` : `<div class="empty">${cliFiltro ? "Nenhum cliente encontrado." : "Nenhum cliente cadastrado no balcão ainda. Cadastre aqui ou na hora da venda."}</div>`}
       </section>
@@ -1121,7 +1232,7 @@
     const ul = $("#ent-res"); if (!ul) return;
     ul.hidden = !q.trim();
     ul.innerHTML = entResults.length ? entResults.map((p, i) => `<li role="option" class="${i === entIdx ? "is-sel" : ""}" data-ent-add="${esc(p.id)}"><span class="row__thumb">${T().media(p)}</span><span class="res__name"><b>${esc(p.name)}</b><small class="muted">${esc(p.code)} · estoque ${p.stock}</small></span><span class="num res__price">${money(p.cost || 0)}</span></li>`).join("")
-      : `<li class="res__none">Nada encontrado. Cadastre o produto em Produtos primeiro.</li>`;
+      : curta(q) ? dicaBusca(q) : `<li class="res__none">Nada encontrado. Cadastre o produto em Produtos primeiro.</li>`;
   }
   function entAdd(id) {
     const p = T().prodBy(id); if (!p) return;
@@ -1406,10 +1517,24 @@
       if (venda) mostrarNota(venda);
       return;
     }
+    if (d.caixaPrint || d.caixaProd) {
+      const id = d.caixaPrint || d.caixaProd;
+      try {
+        const x = await api(`r=caixa&id=${encodeURIComponent(id)}`);
+        if (d.caixaPrint) imprimirFechamento(x.caixa, x.resumo, x.vendas);
+        else { paint(`hist-prod-${id}`, produtosDiaHTML(x.vendas)); t.hidden = true; }
+      } catch (err) { T().toast(err.message); }
+      return;
+    }
     if (d.caixaCancel) {
       const motivo = prompt(`Cancelar a venda ${d.caixaCancel}? Ela deixa de contar no caixa. Escreva o motivo:`);
       if (motivo === null) return;
-      try { await api(`r=venda&acao=cancelar&code=${encodeURIComponent(d.caixaCancel)}`, "POST", { motivo }); T().toast(`Venda ${d.caixaCancel} cancelada. Confira o estoque do produto.`); renderCaixa(); }
+      try {
+        const { estoque } = await api(`r=venda&acao=cancelar&code=${encodeURIComponent(d.caixaCancel)}`, "POST", { motivo, por: T().session()?.name });
+        if (T().catalogoServidor) T().aplicarEstoque(estoque);
+        T().toast(T().catalogoServidor ? `Venda ${d.caixaCancel} cancelada. O estoque voltou.` : `Venda ${d.caixaCancel} cancelada. Confira o estoque do produto.`);
+        renderCaixa();
+      }
       catch (err) { T().toast(err.message); }
       return;
     }
@@ -1459,6 +1584,7 @@
     $$("[data-eq-loja]").forEach((i) => (draft.lojas[+i.dataset.eqLoja].nome = i.value.trim()));
     $$("[data-eq-vend]").forEach((i) => (draft.vendedores[+i.dataset.eqVend].nome = i.value.trim()));
     $$("[data-eq-ativo]").forEach((i) => (draft.vendedores[+i.dataset.eqAtivo].ativo = i.checked));
+    $$("[data-eq-taxa]").forEach((i) => (draft.taxas[i.dataset.eqTaxa] = parseMoney(i.value)));
   }
 
   document.addEventListener("input", (e) => {
@@ -1569,6 +1695,19 @@
       } catch (err) { T().toast(err.message); }
       return;
     }
+    if (f.dataset.cadReceber) {
+      e.preventDefault();
+      const v = parseMoney(f.valor.value);
+      if (!(v > 0)) { f.valor.focus(); return T().toast("Informe o valor recebido"); }
+      const btn = f.querySelector("button"); btn.disabled = true;
+      try {
+        await loadSetup(true);
+        const r = await api(`r=clientes&acao=receber&id=${encodeURIComponent(f.dataset.cadReceber)}`, "POST", { valor: v, forma: f.forma.value, lojaId: lojaId(), por: T().session()?.name });
+        T().toast(r.fiado ? `Recebido ${money(v)}. Ainda deve ${money(r.fiado)}.` : `Recebido ${money(v)}. Fiado quitado!`);
+        await loadSetup(true); renderClientes();
+      } catch (err) { btn.disabled = false; T().toast(err.message); }
+      return;
+    }
     if (f.dataset.cadAjuste) {
       e.preventDefault();
       const v = parseMoney(f.valor.value);
@@ -1596,10 +1735,13 @@
       if (!ent.itens.length) { er.textContent = "Adicione os produtos que chegaram"; return; }
       const btn = f.querySelector("button.btn--primary"); btn.disabled = true;
       try {
-        const { compra } = await api("r=compra", "POST", { fornecedorId: ent.fornecedorId, nota: ent.nota, data: ent.data || iso(new Date()), itens: ent.itens, lojaId: lojaId() });
-        // estoque e custo ficam no navegador do admin (produtos ainda são locais)
-        ent.itens.forEach((it) => { const p = T().prodBy(it.productId); if (p) { p.stock += it.qty; if (ent.atualizaCusto && it.custo > 0) p.cost = it.custo; } });
-        T().saveProducts();
+        const { compra, estoque, custos } = await api("r=compra", "POST", { fornecedorId: ent.fornecedorId, nota: ent.nota, data: ent.data || iso(new Date()), itens: ent.itens, lojaId: lojaId(), atualizaCusto: ent.atualizaCusto, por: T().session()?.name });
+        if (T().catalogoServidor) T().aplicarEstoque(estoque, custos);
+        else {
+          // catálogo ainda só neste navegador: estoque e custo locais, como antes
+          ent.itens.forEach((it) => { const p = T().prodBy(it.productId); if (p) { p.stock += it.qty; if (ent.atualizaCusto && it.custo > 0) p.cost = it.custo; } });
+          T().saveProducts();
+        }
         T().toast(`Entrada registrada: ${compra.itens.reduce((n, it) => n + it.qty, 0)} itens de ${compra.fornecedor.nome}`);
         ent = { fornecedorId: ent.fornecedorId, nota: "", data: "", itens: [], atualizaCusto: ent.atualizaCusto }; saveEnt();
         await loadForn(true); renderEntrada();
@@ -1623,7 +1765,7 @@
       e.preventDefault();
       const btn = f.querySelector("button"); btn.disabled = true;
       try {
-        await api("r=caixa&acao=abrir", "POST", { lojaId: lojaId(), fundo: parseMoney(f.fundo.value) });
+        await api("r=caixa&acao=abrir", "POST", { lojaId: lojaId(), fundo: parseMoney(f.fundo.value), por: T().session()?.name });
         await loadSetup(true); T().toast("Caixa aberto. Boas vendas!");
         if (location.hash.includes("aba=balcao")) renderPdv(); else renderCaixa();
       } catch (err) { btn.disabled = false; T().setErr(f, "fundo", err.message); }
@@ -1633,7 +1775,7 @@
       e.preventDefault();
       const valor = parseMoney(f.valor.value);
       if (!(valor > 0)) { f.valor.focus(); return T().toast("Informe o valor"); }
-      try { await api(`r=caixa&acao=movimento&id=${encodeURIComponent(caixaAberto().id)}`, "POST", { tipo: f.tipo.value, valor, motivo: f.motivo.value }); T().toast("Registrado"); renderCaixa(); }
+      try { await api(`r=caixa&acao=movimento&id=${encodeURIComponent(caixaAberto().id)}`, "POST", { tipo: f.tipo.value, valor, motivo: f.motivo.value, por: T().session()?.name }); T().toast("Registrado"); renderCaixa(); }
       catch (err) { T().toast(err.message); }
       return;
     }
@@ -1646,7 +1788,7 @@
       if (dif && !confirm(`O dinheiro contado ${dif > 0 ? "sobra" : "falta"} ${money(Math.abs(dif))} em relação ao esperado. Fechar assim mesmo?`)) return;
       const btn = f.querySelector("button"); btn.disabled = true;
       try {
-        const { caixa, resumo: r } = await api(`r=caixa&acao=fechar&id=${encodeURIComponent(f.dataset.caixa)}`, "POST", { contado, obs: f.obs.value });
+        const { caixa, resumo: r } = await api(`r=caixa&acao=fechar&id=${encodeURIComponent(f.dataset.caixa)}`, "POST", { contado, obs: f.obs.value, por: T().session()?.name });
         await loadSetup(true); await renderCaixa(); mostrarFechamento(caixa, r);
       } catch (err) { btn.disabled = false; T().toast(err.message); }
       return;
@@ -1660,5 +1802,7 @@
     }
   });
 
+  // usado pelo financeiro.js (estoque, despesas e dashboard)
+  window.TS_PDV = { api, loadSetup, get setup() { return setup; }, lojaId, loja, caixaAberto, lojaPicker, asyncView, skel, paint, stat, money, parseMoney, fmtMoneyInput, FORMAS, periodo, PERIODOS, iso, dia, hora, norm, store };
   window.TS_EXT = { tabs: { inicio: viewInicio, balcao: viewBalcao, caixa: viewCaixa, relatorios: viewRelatorios, equipe: viewEquipe, clientes: viewClientes, fornecedores: viewFornecedores, entrada: viewEntrada, cupons: viewCupons } };
 })();

@@ -14,7 +14,7 @@
       ]
     },
     {
-      "source": "/api/(.*)",
+      "source": "/api/((?!catalogo).*)",
       "headers": [{ "key": "Cache-Control", "value": "no-store" }]
     }
   ]
