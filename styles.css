@@ -130,6 +130,17 @@ h1, h2, h3 { line-height: 1.15; letter-spacing: -.02em; margin: 0; }
 .mega__brands a { font-weight: 600; font-size: 15px; padding: 6px 0; transition: color .15s; }
 .mega__brands a:hover { color: var(--primary); }
 
+/* menu com 9 itens: aperta antes de virar rolagem no celular */
+@media (max-width: 1240px) {
+  .nav__link { padding: 0 9px; letter-spacing: .04em; }
+  .nav__link::after { left: 9px; right: 9px; }
+}
+@media (max-width: 1040px) {
+  .nav__link { padding: 0 7px; font-size: 12px; letter-spacing: .02em; }
+  .nav__link .i { display: none; }
+  .nav__link::after { left: 7px; right: 7px; }
+}
+
 @media (max-width: 860px) {
   .header__bar { grid-template-columns: auto auto; justify-content: space-between; height: auto; padding-top: 10px; padding-bottom: 10px; row-gap: 10px; gap: 12px; }
   .header__logo img { height: 44px; }

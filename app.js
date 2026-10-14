@@ -78,8 +78,14 @@
   } else {
     products = store.get("ts_products", []);
   }
+  // categoria Tampas (out/2026): tampas saem de Componentes e entram os novos exemplos de tampa
+  if (!store.get("ts_mig_tampas", false)) {
+    products.forEach((p) => { if (p.cat === "pecas" && /^tampa/i.test(p.name)) { p.cat = "tampas"; if (/^PC\d/.test(p.code || "")) p.code = "TP" + p.code.slice(2); } });
+    window.STORE.products.filter((p) => p.cat === "tampas" && !products.some((x) => x.id === p.id)).forEach((p) => products.push({ ...p, image: null }));
+    store.set("ts_mig_tampas", true);
+  }
   // Todo produto tem código e dois preços: consumidor (price) e lojista (priceLoj).
-  const CODE_PREFIX = { telas: "TL", peliculas: "PL", capinhas: "CP", baterias: "BT", carregadores: "CR", acessorios: "AC", pecas: "PC" };
+  const CODE_PREFIX = { telas: "TL", peliculas: "PL", capinhas: "CP", baterias: "BT", carregadores: "CR", acessorios: "AC", tampas: "TP", pecas: "PC" };
   products.forEach((p, i) => {
     p.code ||= (CODE_PREFIX[p.cat] || "TS") + (digits(p.sku) || 3000 + i);
     p.priceLoj ??= Math.round(p.price * 0.8 * 10) / 10;

@@ -9,7 +9,8 @@ window.STORE = {
     { slug: "baterias", name: "Baterias", icon: "c-baterias", desc: "Alta durabilidade" },
     { slug: "carregadores", name: "Carregadores", icon: "c-carregadores", desc: "Cabos e fontes" },
     { slug: "acessorios", name: "Acessórios", icon: "c-acessorios", desc: "Fones e mais" },
-    { slug: "pecas", name: "Outras peças", icon: "c-pecas", desc: "Conector, flex, lentes" },
+    { slug: "tampas", name: "Tampas", icon: "c-tampas", desc: "Tampas traseiras e aros" },
+    { slug: "pecas", name: "Componentes", icon: "c-pecas", desc: "Conector, flex, lentes" },
   ],
   brands: {
     Apple: ["iPhone 11", "iPhone 11 Pro Max", "iPhone 12", "iPhone 13", "iPhone 14", "iPhone 15"],
@@ -57,8 +58,11 @@ window.STORE = {
     P(id("fone-bluetooth"), "Fone Bluetooth com estojo", "acessorios", "Xiaomi", ["Redmi Note 12", "Redmi Note 13", "Poco X5"], 129, 12, { isNew: true, featured: true }),
     P(id("suporte-veicular"), "Suporte veicular magnético", "acessorios", "Motorola", ["Moto G23", "Moto G54", "Moto G84"], 45, 20),
     P(id("conector-carga-a14"), "Conector de carga Galaxy A14", "pecas", "Samsung", ["Galaxy A14"], 35, 14),
-    P(id("tampa-traseira-iphone-12"), "Tampa traseira iPhone 12", "pecas", "Apple", ["iPhone 12"], 85, 3, { variants: [["Preta", 0], ["Branca", 0], ["Azul", 0]] }),
+    P(id("tampa-traseira-iphone-12"), "Tampa traseira iPhone 12", "tampas", "Apple", ["iPhone 12"], 85, 3, { variants: [["Preta", 0], ["Branca", 0], ["Azul", 0]] }),
     P(id("lente-camera-g84"), "Lente de câmera Moto G84", "pecas", "Motorola", ["Moto G84"], 22, 11),
     P(id("flex-power-hot-40"), "Flex power/volume Infinix Hot 40", "pecas", "Infinix", ["Hot 40"], 28, 6, { isNew: true }),
+    P(id("tampa-traseira-galaxy-a54"), "Tampa traseira Galaxy A54", "tampas", "Samsung", ["Galaxy A54"], 69, 5, { isNew: true, variants: [["Preta", 0], ["Lilás", 0], ["Verde", 0]] }),
+    P(id("tampa-traseira-redmi-note-12"), "Tampa traseira Redmi Note 12", "tampas", "Xiaomi", ["Redmi Note 12"], 55, 4, { variants: [["Cinza", 0], ["Azul", 0]] }),
+    P(id("tampa-traseira-moto-g84"), "Tampa traseira Moto G84", "tampas", "Motorola", ["Moto G84"], 59, 0),
   ];
 })();
