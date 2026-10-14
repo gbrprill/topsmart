@@ -37,6 +37,7 @@ export function orderMessage(o, kind = "new", url = "") {
   const c = o.customer || {};
   const isLojista = c.type === "lojista";
   const lines = [];
+  // a mensagem passa por um serviço de terceiro (CallMeBot/Z-API): CPF, CNPJ e e-mail ficam só no painel
 
   lines.push(kind === "new" ? `🛒 *NOVO PEDIDO ${o.code}*` : `✅ *PEDIDO ${o.code} CONFIRMADO PELO CLIENTE*`);
   lines.push(fmtDate(kind === "new" ? o.createdAt : o.confirmedAt || o.createdAt));
@@ -44,9 +45,7 @@ export function orderMessage(o, kind = "new", url = "") {
 
   lines.push(`*Cliente${isLojista ? " (lojista)" : ""}:* ${isLojista ? c.razao || c.name : c.name}`);
   if (isLojista && c.name && c.razao) lines.push(`Responsável: ${c.name}`);
-  if (c.doc) lines.push(`${isLojista ? "CNPJ" : "CPF"}: ${c.doc}`);
   if (c.phone) lines.push(`Telefone: ${c.phone}${digits(c.phone).length >= 10 ? ` (wa.me/55${digits(c.phone).replace(/^55(?=\d{10,11}$)/, "")})` : ""}`);
-  if (c.email) lines.push(`E-mail: ${c.email}`);
   lines.push("");
 
   lines.push("*Itens:*");

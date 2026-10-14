@@ -28,6 +28,7 @@
   tip.className = "viz-tip"; tip.setAttribute("role", "tooltip"); tip.hidden = true;
   document.body.append(tip);
   const showTip = (el, x, y) => {
+    // data-tip guarda HTML já escapado duas vezes: o navegador desfaz uma ao ler o atributo
     tip.innerHTML = el.dataset.tip; tip.hidden = false;
     const r = tip.getBoundingClientRect();
     tip.style.left = `${Math.max(8, Math.min(window.innerWidth - r.width - 8, x - r.width / 2))}px`;
@@ -272,12 +273,12 @@
   function barras(itens, { label, cls = "" } = {}) {
     const max = Math.max(...itens.map((i) => Math.abs(i.v)), 1);
     return `<div class="vbars ${cls}" role="img" aria-label="${esc(label)}">${itens.map((i) => `
-      <div class="vbars__col" tabindex="0" data-tip="<b>${esc(i.tip || i.l)}</b><br>${money(i.v)}"><span class="vbars__bar ${i.v < 0 ? "is-neg" : ""}" style="--h:${Math.max(i.v ? 2 : 0, (Math.abs(i.v) / max) * 100)}%"></span><span class="vbars__lbl">${esc(i.l)}</span></div>`).join("")}</div>`;
+      <div class="vbars__col" tabindex="0" data-tip="${esc(`<b>${esc(i.tip || i.l)}</b><br>${money(i.v)}`)}"><span class="vbars__bar ${i.v < 0 ? "is-neg" : ""}" style="--h:${Math.max(i.v ? 2 : 0, (Math.abs(i.v) / max) * 100)}%"></span><span class="vbars__lbl">${esc(i.l)}</span></div>`).join("")}</div>`;
   }
   // barras horizontais com valor e parte do total (formas de pagamento, categorias, despesas)
   function hbarras(itens, total) {
     const max = Math.max(...itens.map((i) => i.v), 1);
-    return `<ul class="hbars">${itens.map((i) => `<li data-tip="<b>${esc(i.l)}</b><br>${money(i.v)}${total ? ` · ${pct((i.v / total) * 100, 0)}` : ""}" tabindex="0">
+    return `<ul class="hbars">${itens.map((i) => `<li data-tip="${esc(`<b>${esc(i.l)}</b><br>${money(i.v)}${total ? ` · ${pct((i.v / total) * 100, 0)}` : ""}`)}" tabindex="0">
       <span class="hbars__l">${esc(i.l)}</span><span class="hbars__track"><span class="hbars__bar" style="--w:${Math.max(1, (i.v / max) * 100)}%"></span></span>
       <span class="hbars__v num">${money(i.v)}${total ? ` <small>${pct((i.v / total) * 100, 0)}</small>` : ""}</span></li>`).join("")}</ul>`;
   }

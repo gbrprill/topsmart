@@ -9,9 +9,10 @@
 // PUT    /api/orders?code=TS-000001       admin muda o status (Authorization: Bearer <sessão do admin>)
 
 import { randomUUID } from "node:crypto";
-import { hasRedis, redis, bumpVersion, VER_KEY, KP, str, num, isAdmin, rateLimit } from "./_shared.js";
+import { hasRedis, redis, bumpVersion, VER_KEY, KP, str, num, isAdmin, rateLimit, safeEqual } from "./_shared.js";
 import { avaliarCupom, consumirCupom, liberarCupom, chaveCliente } from "./_cupons.js";
 import { notifyOrderWhatsApp } from "./_whatsapp.js";
+import { getCatalogo } from "./_pdv.js";
 
 const K = {
   seq: `${KP}order_seq`,
@@ -59,8 +60,18 @@ export default async function handler(req, res) {
         qty: Math.max(1, Math.min(999, parseInt(it.qty, 10) || 1)), unit: Math.max(0, Math.min(1e6, num(it.unit))),
       })).filter((it) => it.name) : [];
       if (!items.length) return res.status(400).json({ error: "Carrinho vazio" });
-      items.forEach((it) => (it.sub = num(it.unit * it.qty)));
       const c = b.customer || {};
+      // preço vem do catálogo do servidor, nunca do navegador (produto fora do catálogo mantém o informado)
+      const cat = Object.fromEntries((await getCatalogo()).map((p) => [p.id, p]));
+      items.forEach((it) => {
+        const p = cat[it.productId];
+        if (!p) return;
+        const base = c.type === "lojista" ? p.priceLoj ?? p.price : p.promo ?? p.price;
+        const delta = (p.variants || []).find(([nome]) => nome === it.variant)?.[1] || 0;
+        it.name = p.code ? `${p.name} - ${p.code}` : p.name;
+        it.unit = num(base + delta);
+      });
+      items.forEach((it) => (it.sub = num(it.unit * it.qty)));
       const customer = {
         type: c.type === "lojista" ? "lojista" : "cliente",
         name: str(c.name, 120), razao: str(c.razao, 160), doc: str(c.doc, 20),
@@ -109,7 +120,7 @@ export default async function handler(req, res) {
       const order = code && (await getOrder(code));
       if (!order) return res.status(404).json({ error: "Pedido não encontrado" });
       const b = req.body || {};
-      if (str(b.token, 60) !== order.token) return res.status(403).json({ error: "Sem permissão" });
+      if (!safeEqual(str(b.token, 60), order.token)) return res.status(403).json({ error: "Sem permissão" });
       const delivery = DELIVERY.includes(b.delivery) ? b.delivery : null;
       const payment = PAYMENT.includes(b.payment) ? b.payment : null;
       if (!delivery || !payment) return res.status(400).json({ error: "Escolha entrega e forma de pagamento" });
