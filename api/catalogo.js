@@ -7,6 +7,9 @@
 // DELETE /api/catalogo?id=                exclui o produto (admin)
 // POST   /api/catalogo?acao=importar      envia produtos do navegador para o servidor, em lotes { produtos, por } (admin)
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
 import { hasRedis, redis, str, num, isAdmin } from "./_shared.js";
 import { K, getJSON, setJSON, getCatalogo, getEstoque, moverEstoque } from "./_pdv.js";
 
@@ -51,6 +54,33 @@ async function salvarImagem(id, dataUrl) {
 
 const publico = ({ cost, min, ...p }, stock) => ({ ...p, stock });
 
+// catálogo de teste: com o servidor vazio, entra uma única vez o mesmo catálogo de exemplo do site (data.js),
+// com os padrões que o site já usa (código pela categoria, preço de lojista 80% e custo 55% do preço)
+const CODE_PREFIX = { telas: "TL", peliculas: "PL", capinhas: "CP", baterias: "BT", carregadores: "CR", acessorios: "AC", tampas: "TP", pecas: "PC" };
+async function semearSeVazio() {
+  if ((await getCatalogo()).length) return;
+  // trava: só um pedido semeia, e nunca de novo (se o admin apagar tudo, não volta sozinho)
+  if ((await redis("SET", `${K.catalogo}:semeado`, new Date().toISOString(), "NX")) !== "OK") return;
+  try {
+    const ctx = { window: {} };
+    vm.runInNewContext(readFileSync(path.join(process.cwd(), "data.js"), "utf8"), ctx, { timeout: 1000 });
+    const seeds = (ctx.window.STORE?.products || []).filter((p) => p.image);
+    const lista = seeds.map((p, i) => limpar({
+      ...p,
+      code: (CODE_PREFIX[p.cat] || "TS") + (String(p.sku || "").replace(/\D/g, "") || 3000 + i),
+      priceLoj: Math.round(p.price * 0.8 * 10) / 10,
+      cost: Math.round(p.price * 0.55 * 10) / 10,
+      createdAt: 1,
+    }));
+    if (!lista.length) return;
+    await setJSON(K.catalogo, lista);
+    await moverEstoque(lista.map((p, i) => ({ productId: p.id, name: p.name, code: p.code, delta: Math.max(0, parseInt(seeds[i].stock, 10) || 0) })), "cadastro", "catálogo de exemplo", "Sistema");
+  } catch (err) {
+    console.error("[catalogo] semear", err);
+    await redis("DEL", `${K.catalogo}:semeado`);
+  }
+}
+
 export default async function handler(req, res) {
   if (!hasRedis()) return res.status(503).json({ error: "Armazenamento não configurado" });
   const q = req.query, b = req.body || {};
@@ -68,6 +98,7 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store");
 
     if (req.method === "GET") {
+      await semearSeVazio();
       const [cat, est] = await Promise.all([getCatalogo(), getEstoque()]);
       if (q.admin) {
         if (!isAdmin(req)) return res.status(401).json({ error: "Acesso restrito ao admin" });

@@ -187,11 +187,11 @@ h1, h2, h3 { line-height: 1.15; letter-spacing: -.02em; margin: 0; }
 
 /* slide 1: foto real da loja dentro de um "celular" */
 .phone-frame {
-  position: relative; width: min(260px, 70%); aspect-ratio: 9 / 16; border-radius: 34px; padding: 8px;
+  position: relative; width: min(200px, 56%); aspect-ratio: 9 / 16; border-radius: 30px; padding: 7px;
   background: #050505; border: 3px solid var(--primary-bright); transform: rotate(-6deg);
   box-shadow: 0 0 0 10px rgba(47, 128, 200, .08), 0 30px 80px rgba(47, 128, 200, .45);
 }
-.phone-frame img { width: 100%; height: 100%; object-fit: cover; border-radius: 26px; }
+.phone-frame img { width: 100%; height: 100%; object-fit: cover; border-radius: 23px; }
 .phone-frame::before { content: ""; position: absolute; top: 16px; left: 50%; transform: translateX(-50%); width: 34%; height: 18px; background: #050505; border-radius: 99px; z-index: 1; }
 .glow { position: absolute; width: 70%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, rgba(47, 128, 200, .5), transparent 65%); filter: blur(20px); }
 .chip {
@@ -1015,8 +1015,8 @@ kbd { font: 600 11px/1 ui-monospace, "Cascadia Mono", monospace; padding: 3px 5p
 .seg--sm button, .seg--sm label span { height: 30px; padding: 0 10px; font-size: 13px; }
 .espera { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
 .espera .i { width: 16px; height: 16px; }
-.chip { height: 30px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line); background: #fff; font-size: 13px; font-weight: 500; transition: border-color 150ms ease; }
-.chip:hover { border-color: var(--foreground); }
+.espera .chip { height: 30px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line); background: #fff; font-size: 13px; font-weight: 500; transition: border-color 150ms ease; }
+.espera .chip:hover { border-color: var(--foreground); }
 .pdv__search { position: relative; display: flex; align-items: center; }
 .pdv__search > .i { position: absolute; left: 16px; color: var(--muted); }
 .pdv__search input { width: 100%; height: 56px; padding: 0 64px 0 48px; font-size: 17px; border-radius: 14px; border: 1.5px solid var(--line); background: #fff; transition: border-color 150ms ease, box-shadow 150ms ease; }

@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "api/catalogo.js": { "includeFiles": "data.js" }
+  },
   "headers": [
     {
       "source": "/(.*)",
