@@ -72,7 +72,7 @@
   const SEED_VERSION = 2;
   let products;
   if (store.get("ts_seed_v", 0) !== SEED_VERSION || !store.get("ts_products", null)) {
-    products = window.STORE.products.map((p) => ({ ...p, image: null }));
+    products = window.STORE.products.map((p) => ({ ...p, image: p.image || null }));
     store.set("ts_products", products);
     store.set("ts_seed_v", SEED_VERSION);
   } else {
@@ -83,6 +83,11 @@
     products.forEach((p) => { if (p.cat === "pecas" && /^tampa/i.test(p.name)) { p.cat = "tampas"; if (/^PC\d/.test(p.code || "")) p.code = "TP" + p.code.slice(2); } });
     window.STORE.products.filter((p) => p.cat === "tampas" && !products.some((x) => x.id === p.id)).forEach((p) => products.push({ ...p, image: null }));
     store.set("ts_mig_tampas", true);
+  }
+  // amostra de produtos com foto (out/2026): entra também em catálogos já salvos no navegador
+  if (!store.get("ts_mig_amostra", false)) {
+    window.STORE.products.filter((p) => p.image && !products.some((x) => x.id === p.id)).forEach((p) => products.push({ ...p }));
+    store.set("ts_mig_amostra", true);
   }
   // Todo produto tem código e dois preços: consumidor (price) e lojista (priceLoj).
   const CODE_PREFIX = { telas: "TL", peliculas: "PL", capinhas: "CP", baterias: "BT", carregadores: "CR", acessorios: "AC", tampas: "TP", pecas: "PC" };
@@ -847,7 +852,7 @@
       (!f.max || basePrice(p) <= +f.max) &&
       (!f.stock || p.stock > 0));
     const sorters = {
-      relevance: (a, b) => (b.stock > 0) - (a.stock > 0) || b.featured - a.featured,
+      relevance: (a, b) => (b.stock > 0) - (a.stock > 0) || !!b.image - !!a.image || b.featured - a.featured,
       low: (a, b) => basePrice(a) - basePrice(b),
       high: (a, b) => basePrice(b) - basePrice(a),
       new: (a, b) => (b.createdAt || 0) - (a.createdAt || 0) || b.isNew - a.isNew,
