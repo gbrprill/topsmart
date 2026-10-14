@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { hasRedis, redis, bumpVersion, VER_KEY, KP, str, num, isAdmin, rateLimit } from "./_shared.js";
 import { avaliarCupom, consumirCupom, liberarCupom, chaveCliente } from "./_cupons.js";
+import { notifyOrderWhatsApp } from "./_whatsapp.js";
 
 const K = {
   seq: `${KP}order_seq`,
@@ -97,6 +98,8 @@ export default async function handler(req, res) {
       };
       await redis("LPUSH", K.list, order.code);
       const ver = await saveOrder(order);
+      // avisa o dono no WhatsApp antes de responder (a função da Vercel congela depois da resposta)
+      await notifyOrderWhatsApp(order, "new", req);
       return res.status(201).json({ order: publicOrder(order), token: order.token, ver });
     }
 
@@ -112,9 +115,12 @@ export default async function handler(req, res) {
       if (!delivery || !payment) return res.status(400).json({ error: "Escolha entrega e forma de pagamento" });
       if (delivery === "entrega" && !order.customer.address) return res.status(400).json({ error: "Sem endereço cadastrado para entrega" });
       order.checkout = { name: str(b.name, 160), phone: str(b.phone, 20), note: str(b.note, 300), delivery, payment };
+      const firstConfirm = order.stage !== "CONFIRMED";
       order.stage = "CONFIRMED";
       order.confirmedAt = new Date().toISOString();
       await saveOrder(order);
+      // segundo aviso com entrega, pagamento e observação (só na primeira confirmação)
+      if (firstConfirm) await notifyOrderWhatsApp(order, "confirmed", req);
       return res.status(200).json({ order: publicOrder(order) });
     }
 
