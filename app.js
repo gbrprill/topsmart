@@ -89,6 +89,11 @@
     window.STORE.products.filter((p) => p.image && !products.some((x) => x.id === p.id)).forEach((p) => products.push({ ...p }));
     store.set("ts_mig_amostra", true);
   }
+  // só produtos com foto (out/2026): saem os exemplos antigos sem foto; produto cadastrado no painel fica
+  if (!store.get("ts_mig_sofoto", false)) {
+    products = products.filter((p) => p.image || p.createdAt);
+    store.set("ts_mig_sofoto", true);
+  }
   // Todo produto tem código e dois preços: consumidor (price) e lojista (priceLoj).
   const CODE_PREFIX = { telas: "TL", peliculas: "PL", capinhas: "CP", baterias: "BT", carregadores: "CR", acessorios: "AC", tampas: "TP", pecas: "PC" };
   products.forEach((p, i) => {
@@ -99,6 +104,8 @@
   });
   const saveProducts = () => store.set("ts_products", products);
   saveProducts();
+  // categorias que têm produto: menu, rodapé e filtros escondem as vazias
+  const catsComProduto = () => categories.filter((c) => products.some((p) => p.cat === c.slug));
   const catBy = (slug) => categories.find((c) => c.slug === slug) || categories[categories.length - 1];
   const prodBy = (id) => products.find((p) => p.id === id);
   const isLojista = () => session()?.type === "lojista";
@@ -601,7 +608,7 @@
   function renderNav() {
     const brandLinks = (cat) => Object.keys(brands).map((b) =>
       `<a href="#/catalogo?${cat ? `cat=${cat}&` : ""}brand=${encodeURIComponent(b)}">${b}</a>`).join("");
-    const items = categories.map((c) => `
+    const items = catsComProduto().map((c) => `
       <li class="nav__item">
         <a class="nav__link" data-nav="${c.slug}" href="#/categoria/${c.slug}">${c.name}${icon("i-down")}</a>
         <div class="mega"><div class="container mega__inner">
@@ -617,7 +624,7 @@
           <div class="mega__brands">${brandLinks()}</div>
         </div></div>
       </li>`;
-    $("#footer-cats").innerHTML = categories.map((c) => `<li><a href="#/categoria/${c.slug}">${c.name}</a></li>`).join("");
+    $("#footer-cats").innerHTML = catsComProduto().map((c) => `<li><a href="#/categoria/${c.slug}">${c.name}</a></li>`).join("");
   }
 
   function renderHeader() {
@@ -642,10 +649,10 @@
   const perk = (ic, t, d) => `<div class="perk"><span class="perk__ic">${icon(ic)}</span><div><strong>${t}</strong><span>${d}</span></div></div>`;
 
   // card do banner de lojista: usa o produto real, se existir, para mostrar o preço de quem está logado
-  function heroCard(ic, label, name) {
+  function heroCard(ic, label, name, curto = name) {
     const p = products.find((x) => x.name === name);
     const price = !canSeePrice() ? `<span class="price">${icon("i-lock")}</span>` : p ? `<span class="price">${money(basePrice(p))}</span>` : "";
-    return `<div class="stack__card"><span class="row__thumb">${icon(ic)}</span><div><small>${label}</small><strong>${esc(name)}</strong></div>${price}</div>`;
+    return `<div class="stack__card"><span class="row__thumb">${icon(ic)}</span><div><small>${label}</small><strong>${esc(curto)}</strong></div>${price}</div>`;
   }
 
   function viewHome() {
@@ -686,9 +693,9 @@
                 </div>
                 <div class="slide__visual" aria-hidden="true">
                   <div class="stack">
-                    ${heroCard("c-telas", "Telas", "Tela iPhone 11")}
-                    ${heroCard("c-baterias", "Baterias", "Bateria Galaxy A14")}
-                    ${heroCard("c-pecas", "Componentes", "Conector de carga Galaxy A14")}
+                    ${heroCard("c-telas", "Telas", "Tela Display LCD Motorola Moto G37 Com Aro WEFIX", "Tela Moto G37 com aro")}
+                    ${heroCard("c-baterias", "Baterias", "Bateria iPhone 11 Homologada Anatel WEFIX", "Bateria iPhone 11")}
+                    ${heroCard("c-pecas", "Componentes", "Flex Power Volume Infinix Hot 20i", "Flex power Infinix Hot 20i")}
                   </div>
                 </div>
               </article>
@@ -735,7 +742,7 @@
           <div class="banners">
             <a class="banner banner--dark" href="#/categoria/telas"><h3>Telas</h3><p>Que elevam o padrão do reparo</p><span class="banner__art">${icon("c-telas")}</span><span class="banner__go">${icon("i-arrow")}</span></a>
             <a class="banner" href="#/categoria/baterias"><h3>Baterias</h3><p>Mais horas longe da tomada</p><span class="banner__art">${icon("c-baterias")}</span><span class="banner__go">${icon("i-arrow")}</span></a>
-            <a class="banner" href="#/categoria/peliculas"><h3>Películas</h3><p>Proteção do jeito certo</p><span class="banner__art">${icon("c-peliculas")}</span><span class="banner__go">${icon("i-arrow")}</span></a>
+            <a class="banner" href="#/categoria/tampas"><h3>Tampas</h3><p>Traseiras, aros e carcaças</p><span class="banner__art">${icon("c-tampas")}</span><span class="banner__go">${icon("i-arrow")}</span></a>
             <a class="banner banner--dark" href="#/categoria/pecas"><h3>Componentes</h3><p>Que sua bancada precisa</p><span class="banner__art">${icon("c-pecas")}</span><span class="banner__go">${icon("i-arrow")}</span></a>
           </div>
         </div>
@@ -861,7 +868,7 @@
 
     const cat = forcedCat || f.cat ? catBy(f.cat) : null;
     const title = cat ? cat.name : f.q ? `Resultados para “${esc(f.q)}”` : "Catálogo";
-    const models = f.brand ? brands[f.brand] || [] : Object.values(brands).flat();
+    const models = [...new Set(products.filter((p) => !f.brand || p.brand === f.brand).flatMap((p) => p.models || []))];
 
     let results;
     if (!list.length) {
@@ -885,8 +892,8 @@
       </div>
       <div class="catalog">
         <aside class="filters" id="filters" aria-label="Filtros">
-          ${forcedCat ? "" : `<div><h3>Categoria</h3><select data-filter="cat"><option value="">Todas</option>${categories.map((c) => `<option value="${c.slug}" ${f.cat === c.slug ? "selected" : ""}>${c.name}</option>`).join("")}</select></div>`}
-          <div><h3>Modelo do aparelho</h3><select data-filter="model"><option value="">Todos</option>${models.map((m) => `<option ${f.model === m ? "selected" : ""}>${m}</option>`).join("")}</select></div>
+          ${forcedCat ? "" : `<div><h3>Categoria</h3><select data-filter="cat"><option value="">Todas</option>${catsComProduto().map((c) => `<option value="${c.slug}" ${f.cat === c.slug ? "selected" : ""}>${c.name}</option>`).join("")}</select></div>`}
+          ${models.length ? `<div><h3>Modelo do aparelho</h3><select data-filter="model"><option value="">Todos</option>${models.map((m) => `<option ${f.model === m ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>` : ""}
           ${canSeePrice() ? `<div><h3>Preço (R$)</h3><div class="price-range">
             <input type="number" min="0" placeholder="Mín." value="${esc(f.min)}" data-filter="min" aria-label="Preço mínimo">
             <input type="number" min="0" placeholder="Máx." value="${esc(f.max)}" data-filter="max" aria-label="Preço máximo"></div></div>` : ""}
