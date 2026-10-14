@@ -683,6 +683,7 @@
         </div></div>
       </li>`).join("");
     $("#nav-list").innerHTML = items + `
+      <li class="nav__item"><a class="nav__link" data-nav="peliculas" href="#/peliculas">Películas compatíveis</a></li>
       <li class="nav__item">
         <a class="nav__link" data-nav="marcas" href="#/catalogo">Marcas${icon("i-down")}</a>
         <div class="mega"><div class="container mega__inner">
@@ -690,13 +691,13 @@
           <div class="mega__brands">${brandLinks()}</div>
         </div></div>
       </li>`;
-    $("#footer-cats").innerHTML = catsComProduto().map((c) => `<li><a href="#/categoria/${c.slug}">${c.name}</a></li>`).join("");
+    $("#footer-cats").innerHTML = catsComProduto().map((c) => `<li><a href="#/categoria/${c.slug}">${c.name}</a></li>`).join("") + `<li><a href="#/peliculas">Películas compatíveis</a></li>`;
   }
 
   function renderHeader() {
     const route = location.hash.split("?")[0];
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
-    const activeCat = route.startsWith("#/categoria/") ? route.split("/")[2] : params.get("cat");
+    const activeCat = route.startsWith("#/categoria/") ? route.split("/")[2] : route === "#/peliculas" ? "peliculas" : params.get("cat");
     document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("is-active", a.dataset.nav === activeCat));
     const s = session();
     const link = $("#account-link");
@@ -1668,6 +1669,7 @@
       case "login": case "cadastro": html = viewAuth(); break;
       case "conta": html = viewAccount(); break;
       case "admin": html = viewAdmin(); break;
+      case "peliculas": html = window.TS_PEL ? window.TS_PEL.view() : viewNotFound(); break;
       default: html = viewNotFound();
     }
     if (html !== null) main.innerHTML = html;
@@ -1677,7 +1679,7 @@
     $("#search-input").value = sp.get("q") || "";
     renderHeader();
     syncCartUI();
-    const titles = { catalogo: "Catálogo", categoria: categories.find((c) => c.slug === parts[1])?.name, produto: (() => { const p = products.find((x) => x.slug === parts[1]); return p && fullName(p); })(), carrinho: "Carrinho", login: "Entrar ou cadastrar", cadastro: "Entrar ou cadastrar", conta: "Minha conta", admin: "Painel" };
+    const titles = { catalogo: "Catálogo", categoria: categories.find((c) => c.slug === parts[1])?.name, produto: (() => { const p = products.find((x) => x.slug === parts[1]); return p && fullName(p); })(), carrinho: "Carrinho", login: "Entrar ou cadastrar", cadastro: "Entrar ou cadastrar", conta: "Minha conta", admin: "Painel", peliculas: "Películas compatíveis" };
     document.title = titles[parts[0]] ? `${titles[parts[0]]} | Top Smart` : "Top Smart | Peças e Componentes";
   }
 
@@ -2022,7 +2024,12 @@
   $("#overlay").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#drawer").classList.contains("is-open")) closeDrawer(); });
 
-  window.addEventListener("hashchange", () => { router(); window.scrollTo(0, 0); });
+  window.addEventListener("hashchange", (e) => {
+    // na tabela de películas, no computador, trocar de modelo não volta a página para o topo
+    const mesmaTabela = e.oldURL.includes("#/peliculas") && location.hash.startsWith("#/peliculas") && matchMedia("(min-width: 861px)").matches;
+    router();
+    if (!mesmaTabela) window.scrollTo(0, 0);
+  });
 
   // funções compartilhadas com o pdv.js (ponto de venda, caixa e relatórios)
   window.TS = {
